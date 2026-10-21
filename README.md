@@ -1,11 +1,41 @@
 # Medsynth: Synthetic medical image generator
 
-One command fine-tunes Stable Diffusion 1.5 (LoRA, on your NVIDIA GPU) on three public
-skin-image datasets and saves the result **inside this project folder**. `main.py` loads only
-that saved model, so generating an image never retrains anything.
+Medsynth fine-tunes Stable Diffusion 1.5 with LoRA on three public skin-image datasets and
+provides a local Gradio app for generating synthetic images. Training and inference are
+separate: `train.py` prepares the datasets, trains, and exports the model; `main.py` only loads
+the exported local pipeline and generates images.
+
+> **Already have a trained model?** Keep `medsynth-model/pipeline/`, install the dependencies,
+> and run `python main.py`. You do not need the training datasets for image generation.
+
+## Contents
+
+- [Project structure](#project-structure)
+- [Install](#install)
+- [Prepare the datasets](#prepare-the-datasets)
+- [Train the model](#train-the-model)
+- [Run the app](#run-the-app)
+- [Writing prompts](#writing-prompts)
+- [Clinical prompt enhancement](#clinical-prompt-enhancement)
+- [Conversations](#conversations)
+- [Quality checks](#quality-checks)
+- [Troubleshooting](#troubleshooting)
+- [Responsible use](#responsible-use)
+
+## At a glance
+
+| Task | Entry point | Needs |
+|---|---|---|
+| Generate images | `python main.py` | Exported `medsynth-model/pipeline/` |
+| Train or resume training | `python train.py` | Dataset files, CUDA-capable NVIDIA GPU, internet for the base model |
+| Prepare datasets | Included in `train.py` | Place source datasets as described below |
 
 ```bash
+# Train once (requires an NVIDIA GPU with CUDA and the training datasets):
 python train.py
+
+# Run the app after training:
+python main.py
 ```
 
 ## The three datasets = three imaging views
@@ -24,88 +54,171 @@ needs its own downloader.
 
 ---
 
-## 1. Project layout
+## Project structure
 
 ```
 medsynth/
 ├── main.py
-├── train.py                  <- everything is configured at the top of this file
+├── train.py                  <- dataset preparation, training, and model export
 ├── requirements.txt
-├── utils/prompt_enhancer.py  <- free text -> caption in the training grammar (75-token budget)
-├── utils/chat_history.py     <- conversations, images and per-thread settings (SQLite)
-├── data/                     <- your datasets
-│   └── raw/ham10000  raw/pad_ufes_20  raw/fitzpatrick17k
-└── medsynth-model/           <- created by train.py: your trained model
-    ├── pipeline/             <- what main.py loads (standalone, ~2 GB)
-    ├── lora/  checkpoints/  state/  samples/
-    └── model_info.json  train_config.json  train_log.csv  prompt_examples.txt
+├── utils/
+│   ├── prompt_enhancer.py    <- maps free text to the training caption grammar
+│   └── chat_history.py       <- conversations, images and settings (SQLite)
+├── data/                     <- local training data; not needed for inference
+│   ├── raw/                  <- source datasets go here
+│   │   ├── ham10000/
+│   │   ├── pad_ufes_20/
+│   │   └── fitzpatrick17k/    <- populated automatically for Fitzpatrick17k
+│   └── prepared/             <- generated images, captions, and holdout metadata
+├── medsynth-model/           <- created by train.py
+│   ├── pipeline/             <- standalone model loaded by main.py
+│   ├── lora/ checkpoints/ state/ samples/  <- training artifacts
+│   └── model_info.json train_config.json train_log.csv prompt_examples.txt
+└── results/                  <- created by the app for conversation history
 ```
 
-## 2. Install
+`train.py` is the supported setup and training entry point. It includes dataset organization,
+archive extraction, image processing, and caption generation; there is no separate preprocessing
+script to run. Dataset files and generated model/data directories are local working files, not
+application source code.
 
-You need an **NVIDIA GPU with CUDA** (8 GB VRAM minimum, 16 GB+ comfortable), Python 3.10 to
-3.12, and about 30 GB of free disk.
+## Install
+
+Use Python 3.10–3.12. Training requires an **NVIDIA GPU with CUDA** (8 GB VRAM minimum,
+16 GB+ comfortable) and about 30 GB of free disk for the base model, datasets, and training
+outputs. Inference uses the exported pipeline and can run without the base-model cache; a GPU
+is recommended for generation speed.
 
 ```bash
 python -m venv .venv
-# Windows:  .venv\Scripts\activate        macOS/Linux:  source .venv/bin/activate
-
-# 1) CUDA build of PyTorch: get the exact command for your driver from
-#    https://pytorch.org/get-started/locally   (example only:)
-pip install torch --index-url https://download.pytorch.org/whl/cu124
-
-# 2) everything else
+# Windows PowerShell:
+# .venv\Scripts\Activate.ps1
+# macOS/Linux:
+# source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-# 3) the GPU must be visible; this must print True and your GPU name
-python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# Check whether CUDA is available; training requires this to print True.
+python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
 ```
 
-`train.py` repeats this check on start and **refuses to run on CPU**, explaining how to fix a
-CPU-only PyTorch install. The 5 GB base model downloads from Hugging Face on the first run
-(no token needed). The old `runwayml/stable-diffusion-v1-5` repo was removed, so the default is
-its community mirror `stable-diffusion-v1-5/stable-diffusion-v1-5`.
+The requirements pin a CUDA 12.1 PyTorch build. If you need a different PyTorch/CUDA build,
+install the PyTorch version matching your driver and adjust the PyTorch pin and package index
+in `requirements.txt`. `train.py` checks CUDA itself and refuses to train on CPU. On the first
+training run, the base model
+`stable-diffusion-v1-5/stable-diffusion-v1-5` downloads from Hugging Face (no token required).
 
-## 3. Get the datasets
+## Prepare the datasets
 
-| Dataset | How | Where it ends up |
-|---|---|---|
-| **Fitzpatrick17k** | **Automatic.** `train.py` downloads the CSV and images itself. | `data/raw/fitzpatrick17k/` |
-| **HAM10000** | Manual. https://doi.org/10.7910/DVN/DBW86T (or Kaggle `kmader/skin-cancer-mnist-ham10000`). Get `HAM10000_images_part_1.zip`, `HAM10000_images_part_2.zip`, `HAM10000_metadata`. Licence CC BY-NC 4.0. | `data/raw/ham10000/` |
-| **PAD-UFES-20** | Manual. https://data.mendeley.com/datasets/zr7vgbcyr2/1 (or Kaggle `mahdavi1202/skin-cancer`). Get the image zip(s) and `metadata.csv`. | `data/raw/pad_ufes_20/` |
+Training data is **not included** in the repository. Download the datasets from their official
+sources and place them in the matching folders below. From the project root, the expected layout
+is:
 
-- **Loose files are fine.** If you drop the HAM10000 or PAD-UFES-20 files straight into
-  `data/`, `train.py` moves them into the right `raw/` folder for you. Zips stay zipped
-  (nested zips too); the script extracts them.
-- **Fitzpatrick17k notes.** About 16.4k usable rows remain after dropping images the authors
-  flagged as wrong or unusable. Some source links are dead; those are recorded in
-  `download_failures.tsv` and not retried on later runs. The first download takes a while, and
-  if you stop it, the next run continues where it left off. The images belong to third-party
-  sites, so see the dataset's GitHub page for terms.
-- If a dataset is missing, `train.py` stops before doing any slow work and prints exactly what
-  to download and where.
+```
+data/
+└── raw/
+    ├── ham10000/
+    │   ├── HAM10000_metadata.csv
+    │   ├── HAM10000_images_part_1.zip     (or extracted image files)
+    │   └── HAM10000_images_part_2.zip     (or extracted image files)
+    ├── pad_ufes_20/
+    │   ├── metadata.csv
+    │   ├── imgs_part_1.zip                (or extracted image files)
+    │   └── ...                            (other image archives/files)
+    └── fitzpatrick17k/
+        ├── fitzpatrick17k.csv             (downloaded automatically)
+        ├── download_failures.tsv          (created by the downloader)
+        └── images/                        (downloaded automatically)
+```
 
-## 4. Train: one command
+Create the dataset directories before copying files. For example, on Windows PowerShell, run
+these commands from the Medsynth project folder:
+
+```powershell
+New-Item -ItemType Directory -Force -Path `
+  "data\raw\ham10000", `
+  "data\raw\pad_ufes_20", `
+  "data\raw\fitzpatrick17k"
+```
+
+On macOS or Linux:
+
+```bash
+mkdir -p data/raw/ham10000 data/raw/pad_ufes_20 data/raw/fitzpatrick17k
+```
+
+### HAM10000 — dermoscopy
+
+1. Download **HAM10000_images_part_1.zip**, **HAM10000_images_part_2.zip**, and the metadata
+   file from the [Harvard Dataverse dataset](https://doi.org/10.7910/DVN/DBW86T) or its
+   [Kaggle mirror](https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000).
+2. Put both image archives and the metadata file inside `data/raw/ham10000/`. The metadata may
+   be named `HAM10000_metadata.csv` or `HAM10000_metadata`.
+3. Leave the archives zipped or extract them there. The trainer searches recursively for supported
+   image files and extracts zip archives during preparation.
+
+This dataset is licensed CC BY-NC 4.0; check its terms before use or redistribution.
+
+### PAD-UFES-20 — smartphone photos
+
+1. Download the image archives and `metadata.csv` from
+   [Mendeley Data](https://data.mendeley.com/datasets/zr7vgbcyr2/1) or the
+   [Kaggle mirror](https://www.kaggle.com/datasets/mahdavi1202/skin-cancer).
+2. Put `metadata.csv` and all the image archives/files inside `data/raw/pad_ufes_20/`.
+3. Leave archives zipped or extract them into this folder. The trainer finds image files inside
+   nested folders as well.
+
+### Fitzpatrick17k — clinical photos
+
+No manual image download is normally needed. When you run `python train.py`, the trainer creates
+`data/raw/fitzpatrick17k/`, downloads `fitzpatrick17k.csv`, and attempts to fetch the linked
+images into its `images/` subfolder. Internet access is required. Some source links are no longer
+available; failed links are listed in `download_failures.tsv` and are skipped on subsequent runs.
+Set `retry_failed_downloads = True` in `train.py` if you want to try failed links again. Image
+sources have their own terms; review the dataset's source and licence information before use.
+
+### Before you start training
+
+- Keep each dataset's metadata file beside its images (any nested subfolder is fine).
+- Do not rename image files independently of their metadata IDs; the trainer uses those IDs to
+  match rows to images.
+- Supported image formats are `.jpg`, `.jpeg`, `.png`, `.webp`, and `.bmp`.
+- The default `require_all_datasets = True` setting expects at least 50 usable images from each
+  of the three datasets. If you intentionally have only a subset, set
+  `require_all_datasets = False` in the `Config` section of `train.py`; the remaining dataset(s)
+  must still contain at least 50 usable images.
+- The trainer creates `data/prepared/` itself. Do not download or manually create the prepared
+  images, `metadata.jsonl`, or `heldout.jsonl`.
+- `data/` is ignored by Git, so downloaded datasets and generated prepared images are not added
+  to commits by default.
+
+If a dataset is missing or its metadata/images cannot be matched, training stops and prints the
+dataset folder and expected files. Correct the folder contents and run `python train.py` again.
+
+## Train the model
 
 ```bash
 python train.py
 ```
 
-It runs these steps in order, skipping any that are already complete:
-1️⃣ Verify CUDA availability.
-2️⃣ Organise loose files into `data/raw/<dataset>/`.
-3️⃣ Download the Fitzpatrick17k images.
-4️⃣ Build captions, cap class sizes, and resize every image to 512 × 512 (2 % held‑out for evaluation).
-5️⃣ Train the LoRA on the GPU.
-6️⃣ **Export** a standalone pipeline into `medsynth-model/pipeline/` and write a completion marker.
+The training script performs the full setup and training workflow:
+
+1. Verifies CUDA availability.
+2. Organizes recognized loose dataset files into `data/raw/<dataset>/`.
+3. Downloads the Fitzpatrick17k CSV and available images.
+4. Reads metadata, matches images, builds captions, and creates resized images and split metadata
+   under `data/prepared/` (2% held out for quality checks).
+5. Fine-tunes the LoRA on the GPU, writing checkpoints and training state under
+   `medsynth-model/`.
+6. Exports the standalone pipeline to `medsynth-model/pipeline/`.
 
 **Stopped or crashed?** Just run `python train.py` again. It resumes from the newest
 checkpoint (saved every 1,000 steps). **Already finished?** Running it again prints where the
 model is and exits, so you can never retrain by accident.
 
 **First-time check:** set `smoke_test = True` in the config (below) and run it once. It uses a
-small slice of each dataset, 40 steps, and writes to its own `medsynth-smoketest/` folder.
-Then set it back to `False`.
+small slice of each dataset, 40 steps, and writes to `medsynth-smoketest/` and
+`data/prepared_smoketest/`. Set it back to `False` before full training.
 
 ### What one epoch looks like
 Every epoch draws from the three views in fixed proportions (35 % dermoscopy, 25 % smartphone,
@@ -129,7 +242,7 @@ Rough time for the default 15,000 steps is on the order of half a day on a 24 GB
 longer on slower ones. Check the `it/s` in the progress bar, and look at `medsynth-model/samples/`
 (4 preview images, one per view, every 1,000 steps).
 
-## 5. Configuration (the only place you edit)
+## Configure training
 
 There are no command-line arguments. Open `train.py` and edit the **CONFIG** section near the top.
 
@@ -159,15 +272,46 @@ There are no command-line arguments. Open `train.py` and edit the **CONFIG** sec
 | `smoke_test` | False | quick end-to-end check |
 | `num_workers` | 2 (0 on Windows) | |
 
-## 6. Run the app
+## Run the app
 
 ```bash
 python main.py
 ```
 
-`main.py` loads `medsynth-model/pipeline` from disk (offline) onto the GPU once at startup and
-reuses it for every prompt. To use a model stored elsewhere:
-`MEDSYNTH_MODEL_DIR=/path/to/pipeline python main.py`.
+`main.py` loads `medsynth-model/pipeline` from disk in offline mode and reuses it for every
+prompt. Training data, checkpoints, and the Hugging Face base-model cache are not needed for
+inference once the pipeline is exported. Keep the complete `medsynth-model/pipeline/` directory.
+
+### Can I delete the `data/` folder?
+
+**Yes—after training has completed and you have confirmed image generation works.** Check that
+`medsynth-model/pipeline/model_index.json` exists, start the app with `python main.py`, and
+generate an image before removing training data.
+
+For inference-only use, you can then delete the entire project `data/` folder. The trained
+pipeline is self-contained, and the app does not read training data. Deleting `data/` removes the
+raw datasets, prepared images/captions, and held-out evaluation split; you will need to download
+and prepare datasets again before retraining or running those quality checks. It does **not**
+remove the trained pipeline.
+
+If you may want to retrain or evaluate later, keep at least `data/raw/` and `data/prepared/`.
+Training checkpoints and the separate LoRA weights are under `medsynth-model/`; retain them too
+if you need to resume or continue training. The app creates `results/` for chat history; keep it
+only if you want to preserve conversations.
+
+To load a pipeline stored elsewhere, set `MEDSYNTH_MODEL_DIR` to the directory containing
+`model_index.json` before starting the app:
+
+```powershell
+# Windows PowerShell
+$env:MEDSYNTH_MODEL_DIR = "C:\path\to\pipeline"
+python main.py
+```
+
+```bash
+# macOS/Linux
+MEDSYNTH_MODEL_DIR=/path/to/pipeline python main.py
+```
 
 ### Writing prompts
 Prompts work best in the same grammar as the training captions. Choose **Dermoscopy /
@@ -239,24 +383,24 @@ Back up `medsynth-model/pipeline`. For a small file to share, use
 `medsynth-model/lora/pytorch_lora_weights.safetensors` with `pipe.load_lora_weights(...)` on the
 same SD 1.5 base.
 
-## 7. Check quality
+## Quality checks
 `data/prepared/heldout.jsonl` lists 2 % of images kept out of training. Generate from their
 captions and compare with those real images (FID/KID), or train a classifier on synthetic images
 and test it on real ones. If the previews stop improving, or start copying training images, use
 an earlier `medsynth-model/checkpoints/lora-step-*`.
 
-## 8. Troubleshooting
+## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `CUDA is not available ... CPU-only build` | Reinstall PyTorch with CUDA (section 2). |
+| `CUDA is not available ... CPU-only build` | Reinstall a PyTorch build that matches your CUDA driver (see [Install](#install)). |
 | `CUDA out of memory` | Set `auto_batch = False`, `batch_size = 1`, `grad_accum = 16`, `gradient_checkpointing = True`. |
 | Loss becomes `nan` with fp16 | Set `mixed_precision = "bf16"` (RTX 30-series and newer) or `learning_rate = 5e-5`. |
-| Cannot start: some datasets are not ready | Follow the printed instructions; folder names must be `ham10000`, `pad_ufes_20`, `fitzpatrick17k`. |
+| Cannot start: some datasets are not ready | Check the `data/raw/ham10000/`, `data/raw/pad_ufes_20/`, and `data/raw/fitzpatrick17k/` folders, metadata filenames, and image files. |
 | App says "Trained model not found" | Training hasn't finished, or the model isn't at `medsynth-model/pipeline`. |
 | Many Fitzpatrick downloads fail | Expected for dead links. Set `retry_failed_downloads = True` to try them again. |
 
-## 9. Read this before using the results
+## Responsible use
 
 - The output is **synthetic data**. It must not be used for diagnosis or presented as real
   patient images.

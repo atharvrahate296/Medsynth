@@ -773,10 +773,10 @@ def model_status_html():
             "error", "No trained model &mdash; run <code>train.py</code> first",
         )
     if state == "error":
-        return _status_pill("error", f"Model failed to load &mdash; {detail}")
+        return _status_pill("error", f"GPU failed to load &mdash; {detail}")
     if state == "loading":
-        return _status_pill("loading", "Preparing local model&hellip;")
-    return _status_pill("ready", f"Model ready &middot; {detail}")
+        return _status_pill("loading", "Preparing GPU&hellip;")
+    return _status_pill("ready", f"GPU Ready &middot; {detail}")
 
 
 def model_status_tick():
