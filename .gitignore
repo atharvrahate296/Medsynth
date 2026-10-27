@@ -10,3 +10,7 @@ env/
 *.py[cod]
 model/
 medsynth-model/
+main_gradio_backup.py
+.streamlit
+.streamlit/*
+!.streamlit/config.toml
