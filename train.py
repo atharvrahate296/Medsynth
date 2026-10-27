@@ -6,7 +6,7 @@ Medsynth trainer.  Run it with one command, no arguments:
 
 It fine-tunes Stable Diffusion 1.5 (LoRA, on the NVIDIA GPU) on three datasets
 that together cover three imaging views, then saves a standalone model to
-<project>/medsynth-model/pipeline, which app.py uses.
+<project>/medsynth-model/pipeline, which main.py uses.
 
     view              dataset          caption prefix
     ----------------  ---------------  ----------------------
@@ -1144,7 +1144,7 @@ def train(cfg: Config) -> None:
 
 
 # ==========================================================================
-# Step 6: export a standalone pipeline for app.py
+# Step 6: export a standalone pipeline for main.py
 # ==========================================================================
 def export_pipeline(cfg: Config) -> Path:
     from diffusers import StableDiffusionPipeline
@@ -1217,7 +1217,7 @@ def main() -> None:
         print(f"\nA trained model already exists ({info.get('steps')} steps, "
               f"finished {info.get('finished_at')}).\n"
               f"  location: {out_dir / 'pipeline'}\n"
-              "Nothing to do. Run `python app.py` to use it.\n"
+              "Nothing to do. Run `python main.py` to use it.\n"
               "To train again from scratch, set retrain = True in the CONFIG section.")
         return
 
@@ -1253,7 +1253,7 @@ def main() -> None:
         "steps": steps, "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}))
 
     print(f"\nDone. Standalone model saved to: {target.resolve()}")
-    print("It is permanent: run `python app.py` to use it. No retraining is needed.")
+    print("It is permanent: run `python main.py` to use it. No retraining is needed.")
 
 
 if __name__ == "__main__":

@@ -1,268 +1,282 @@
-# Medsynth: Synthetic medical image generator
+# Medsynth: Synthetic Dermatological Image Studio
 
-One command fine-tunes Stable Diffusion 1.5 (LoRA, on your NVIDIA GPU) on three public
-skin-image datasets and saves the result **inside this project folder**. `main.py` loads only
-that saved model, so generating an image never retrains anything.
+Medsynth fine-tunes Stable Diffusion 1.5 with LoRA across three benchmark skin lesion datasets and provides a dedicated, high-contrast **Streamlit** clinical studio for generating synthetic dermatological images. Training and inference are fully decoupled: `train.py` prepares the datasets, trains, and exports the standalone pipeline; `main.py` runs the Streamlit UI to synthesize images and manage clinical conversation histories.
 
-```bash
-python train.py
-```
-
-## The three datasets = three imaging views
-
-One model learns all three views. Each view has its own caption prefix, so you can ask for
-the one you want.
-
-| View | Dataset | Caption prefix | Example caption |
-|---|---|---|---|
-| Dermoscopy | **HAM10000** (~10k images, 7 diagnoses) | `dermoscopy image of` | `dermoscopy image of melanoma, malignant, back` |
-| Smartphone close-up | **PAD-UFES-20** (~2.3k images, 7 diagnoses) | `smartphone photo of` | `smartphone photo of basal cell carcinoma, malignant, face, Fitzpatrick skin type 2` |
-| Clinical photo | **Fitzpatrick17k** (~16k images, 114 conditions) | `clinical photo of` | `clinical photo of psoriasis, non-neoplastic, Fitzpatrick skin type 5` |
-
-HAM10000 is the curated subset of the ISIC archive. The full ISIC archive is much larger and
-needs its own downloader.
+> **Already have a trained model?** Keep `medsynth-model/pipeline/`, install the dependencies, and run `streamlit run main.py`. You do not need the source training datasets for image generation.
 
 ---
 
-## 1. Project layout
+## Contents
+
+- [At a Glance](#at-a-glance)
+- [The Three Modalities & Datasets](#the-three-modalities--datasets)
+- [Project Structure](#project-structure)
+- [Installation](#installation)
+- [Running the Streamlit Studio](#running-the-streamlit-studio)
+- [Studio Features & UI Guide](#studio-features--ui-guide)
+  - [Chat & Thread Management](#chat--thread-management)
+  - [Clinical Modalities & Grammar](#clinical-modalities--grammar)
+  - [CLIP Token Budget Meter](#clip-token-budget-meter)
+  - [Fine-Tuning Parameter Controls](#fine-tuning-parameter-controls)
+- [Dataset Preparation](#dataset-preparation)
+- [Model Training](#model-training)
+- [Training Configuration](#training-configuration)
+- [Quality Checks](#quality-checks)
+- [Troubleshooting](#troubleshooting)
+- [Responsible & Ethical Use](#responsible--ethical-use)
+
+---
+
+## At a Glance
+
+| Task | Entry Point | Requirements |
+|---|---|---|
+| **Generate Images (Studio)** | `streamlit run main.py` | Exported `medsynth-model/pipeline/`, Python 3.10–3.12 |
+| **Train or Resume Training** | `python train.py` | Source datasets, CUDA-capable NVIDIA GPU, internet access for base SD 1.5 |
+| **Prepare Datasets** | Built into `train.py` | Place raw dataset archives into `data/raw/` |
+
+```bash
+# 1. Install dependencies
+uv pip install -r requirements.txt
+# or: pip install -r requirements.txt
+
+# 2. Launch the Streamlit Studio
+streamlit run main.py
+```
+
+---
+
+## The Three Modalities & Datasets
+
+A single unified model learns all three dermatological views. Each view is conditioned with its trained caption prefix:
+
+| View Modality | Source Dataset | Caption Prefix | Example Clinical Prompt |
+|---|---|---|---|
+| **Dermoscopy** | **HAM10000** (~10k images, 7 diagnoses) | `dermoscopy image of` | `dermoscopy image of melanoma, malignant, back` |
+| **Smartphone Close-Up** | **PAD-UFES-20** (~2.3k images, 7 diagnoses) | `smartphone photo of` | `smartphone photo of basal cell carcinoma, malignant, face, Fitzpatrick skin type 2` |
+| **Clinical Photo** | **Fitzpatrick17k** (~16k images, 114 conditions) | `clinical photo of` | `clinical photo of psoriasis, non-neoplastic, Fitzpatrick skin type 5` |
+
+---
+
+## Project Structure
 
 ```
 medsynth/
-├── main.py
-├── train.py                  <- everything is configured at the top of this file
-├── requirements.txt
-├── utils/prompt_enhancer.py  <- free text -> caption in the training grammar (75-token budget)
-├── utils/chat_history.py     <- conversations, images and per-thread settings (SQLite)
-├── data/                     <- your datasets
-│   └── raw/ham10000  raw/pad_ufes_20  raw/fitzpatrick17k
-└── medsynth-model/           <- created by train.py: your trained model
-    ├── pipeline/             <- what main.py loads (standalone, ~2 GB)
-    ├── lora/  checkpoints/  state/  samples/
-    └── model_info.json  train_config.json  train_log.csv  prompt_examples.txt
+├── main.py                     <- Modern Streamlit clinical studio application
+├── main_gradio_backup.py       <- Preserved backup of previous Gradio interface
+├── train.py                    <- Dataset preparation, LoRA fine-tuning, and model export
+├── requirements.txt            <- Dependencies with PyTorch CUDA --find-links
+├── .streamlit/
+│   └── config.toml             <- Clinical light theme configuration
+├── utils/
+│   ├── prompt_enhancer.py      <- Maps clinical free text onto trained caption grammar
+│   └── chat_history.py         <- SQLite thread persistence, message log, and settings
+├── data/                       <- Local dataset files (ignored by git; not needed for inference)
+│   ├── raw/
+│   │   ├── ham10000/           <- HAM10000 archives and metadata
+│   │   ├── pad_ufes_20/        <- PAD-UFES-20 archives and metadata
+│   │   └── fitzpatrick17k/     <- Fetched automatically by train.py
+│   └── prepared/               <- Processed 512x512 images, captions, and 2% held-out set
+├── medsynth-model/             <- Created by train.py
+│   ├── pipeline/               <- Standalone diffusion pipeline loaded by main.py
+│   ├── lora/                   <- Exported LoRA safetensors
+│   ├── checkpoints/            <- Step-wise checkpoints (saved every 1,000 steps)
+│   └── samples/                <- Multi-view sample images generated during training
+└── results/                    <- Runtime conversation history and user exports
+    ├── medsynth_history.sqlite3
+    └── exports/                <- Markdown + PNG exports
 ```
 
-## 2. Install
+---
 
-You need an **NVIDIA GPU with CUDA** (8 GB VRAM minimum, 16 GB+ comfortable), Python 3.10 to
-3.12, and about 30 GB of free disk.
+## Installation
+
+Medsynth requires Python 3.10–3.12. For training, an **NVIDIA GPU with CUDA** is required (8 GB VRAM minimum, 16 GB+ recommended). For inference in the Streamlit studio, an NVIDIA GPU provides near-instant diffusion sampling; CPU fallback is supported automatically if CUDA is absent.
 
 ```bash
-python -m venv .venv
-# Windows:  .venv\Scripts\activate        macOS/Linux:  source .venv/bin/activate
+# Create and activate virtual environment
+python -m venv env
 
-# 1) CUDA build of PyTorch: get the exact command for your driver from
-#    https://pytorch.org/get-started/locally   (example only:)
-pip install torch --index-url https://download.pytorch.org/whl/cu124
+# Windows PowerShell:
+.\env\Scripts\Activate.ps1
+# Linux / macOS:
+# source env/bin/activate
 
-# 2) everything else
+# Upgrade installer and install dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
+# Alternatively, using uv:
+# uv pip install -r requirements.txt
 
-# 3) the GPU must be visible; this must print True and your GPU name
-python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# Verify CUDA availability
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
 
-`train.py` repeats this check on start and **refuses to run on CPU**, explaining how to fix a
-CPU-only PyTorch install. The 5 GB base model downloads from Hugging Face on the first run
-(no token needed). The old `runwayml/stable-diffusion-v1-5` repo was removed, so the default is
-its community mirror `stable-diffusion-v1-5/stable-diffusion-v1-5`.
+> **Note on `requirements.txt`**: The requirements specify `--find-links https://download.pytorch.org/whl/cu121` so that both standard `pip` and fast `uv pip` resolve PyTorch CUDA 12.1 binaries without index confusion or version mismatches against PyPI packages (`requests`, `streamlit`, etc.).
 
-## 3. Get the datasets
+---
 
-| Dataset | How | Where it ends up |
-|---|---|---|
-| **Fitzpatrick17k** | **Automatic.** `train.py` downloads the CSV and images itself. | `data/raw/fitzpatrick17k/` |
-| **HAM10000** | Manual. https://doi.org/10.7910/DVN/DBW86T (or Kaggle `kmader/skin-cancer-mnist-ham10000`). Get `HAM10000_images_part_1.zip`, `HAM10000_images_part_2.zip`, `HAM10000_metadata`. Licence CC BY-NC 4.0. | `data/raw/ham10000/` |
-| **PAD-UFES-20** | Manual. https://data.mendeley.com/datasets/zr7vgbcyr2/1 (or Kaggle `mahdavi1202/skin-cancer`). Get the image zip(s) and `metadata.csv`. | `data/raw/pad_ufes_20/` |
+## Running the Streamlit Studio
 
-- **Loose files are fine.** If you drop the HAM10000 or PAD-UFES-20 files straight into
-  `data/`, `train.py` moves them into the right `raw/` folder for you. Zips stay zipped
-  (nested zips too); the script extracts them.
-- **Fitzpatrick17k notes.** About 16.4k usable rows remain after dropping images the authors
-  flagged as wrong or unusable. Some source links are dead; those are recorded in
-  `download_failures.tsv` and not retried on later runs. The first download takes a while, and
-  if you stop it, the next run continues where it left off. The images belong to third-party
-  sites, so see the dataset's GitHub page for terms.
-- If a dataset is missing, `train.py` stops before doing any slow work and prints exactly what
-  to download and where.
+To launch the Medsynth Studio, run:
 
-## 4. Train: one command
+```bash
+streamlit run main.py
+```
 
+Or via Python module execution:
+```bash
+python -m streamlit run main.py
+```
+
+The app will open automatically in your browser at `http://localhost:8501`.
+
+### Custom Pipeline Location
+
+If your trained model is located in a non-default directory, set `MEDSYNTH_MODEL_DIR`:
+
+```powershell
+# Windows PowerShell
+$env:MEDSYNTH_MODEL_DIR = "D:\models\medsynth\pipeline"
+streamlit run main.py
+```
+
+```bash
+# Linux / macOS
+MEDSYNTH_MODEL_DIR=/path/to/medsynth/pipeline streamlit run main.py
+```
+
+---
+
+## Studio Features & UI Guide
+
+The Medsynth Studio is engineered with a high-contrast **Clinical Light Theme** tailored for medical visualization:
+
+### 1. Chat & Thread Management
+* **`＋ New Conversation`**: Creates a fresh conversation thread with default generation parameters.
+* **Search Filter**: A live search bar at the top of the sidebar filters threads in real time by title or text inside prior prompt messages.
+* **Inline Renaming**: Edit the current thread's title directly in the sidebar under *Active Thread Management* and click **Save** (or press Enter). Changes persist immediately to SQLite and update the sidebar and header.
+* **📌 Pin / Unpin**: Pin priority experiments so they remain at the top of your sidebar list.
+* **📋 Copy / Duplicate**: Duplicate an entire thread—including prompt history, generated images, and generation settings—to branch off alternative parameter variations.
+* **🧹 Clear Chat**: Erases all messages in the thread while preserving custom generation settings and the conversation slot.
+* **🗑️ Safe Delete**: Two-step deletion (`🗑️ Delete` -> `⚠️ Confirm`) prevents accidental loss of clinical synthesis records.
+* **📥 Export Thread**: Generates a self-contained folder under `results/exports/` containing a formatted Markdown summary and all synthesized PNG images.
+
+### 2. Clinical Modalities & Grammar
+Choose between three capture views using the top selector:
+* **Dermoscopy**: Polarized illumination, 10x magnification, surface pigment networks.
+* **Smartphone**: Handheld close-up framing, natural daylight depth of field.
+* **Clinical Photo**: Standard clinical distance and even lighting.
+
+**Clinical Prompt Enhancement (`Always On`)**:
+The model was fine-tuned on short captions in a structured clinical grammar:
+```
+<view> of <diagnosis>, <category>, <body site>, <Fitzpatrick skin type>
+```
+Enhancement automatically parses natural free text (e.g. `"mole on left forearm of a fitzpatrick 3 patient"`), maps synonyms onto canonical dermatological terms (`melanocytic nevus, benign, arm, Fitzpatrick skin type 3`), and appends view-specific modality tokens (`polarized illumination`, `10x magnification`) while respecting the 75-token CLIP budget.
+
+### 3. CLIP Token Budget Meter
+CLIP text encoders enforce a strict 77-token ceiling (75 usable tokens). The studio includes a real-time **CLIP Budget Meter** with visual progress tracking:
+* Safe zone: Green bar (< 70 tokens).
+* Near limit: Orange warning bar (≥ 70 tokens). Long prompts are safely normalized and truncated without crashing the pipeline.
+
+### 4. Fine-Tuning Parameter Controls
+Expand the **Fine-Tune Parameters** drawer in the sidebar to adjust:
+* **Inference Steps** (1–50, default: `30`): Higher step counts refine lesion borders and micro-textures.
+* **Guidance Scale / CFG** (1.0–15.0, default: `6.5`): Adjusts adherence to clinical prompt keywords.
+* **Seed & 🎲 Randomize**: Set a fixed seed to reproduce identical lesion patterns, or click the shuffle button to generate a new random seed.
+* **Negative Prompt**: Pre-configured with a dermatological negative prompt suppressing CGI, plastic/waxy skin, blur, borders, and anatomical distortions.
+* **🔄 Reset Defaults**: Reverts all sliders and negative prompts back to recommended baseline settings.
+
+### 5. Synthesized Results & Download
+Every generated image includes:
+* High-resolution synthetic skin lesion rendering.
+* Metadata caption detailing the modality, diagnosis, category, step count, CFG scale, seed used, and token count.
+* **`📥 Download PNG`** button for instant saving.
+* Medical research disclaimer note.
+
+---
+
+## Dataset Preparation
+
+Training data is **not included** in the repository. Place dataset archives in the following folders:
+
+```
+data/
+└── raw/
+    ├── ham10000/
+    │   ├── HAM10000_metadata.csv
+    │   ├── HAM10000_images_part_1.zip     (or extracted images)
+    │   └── HAM10000_images_part_2.zip     (or extracted images)
+    ├── pad_ufes_20/
+    │   ├── metadata.csv
+    │   └── imgs_part_1.zip                (or extracted images)
+    └── fitzpatrick17k/
+        ├── fitzpatrick17k.csv             (downloaded automatically by train.py)
+        └── images/                        (downloaded automatically by train.py)
+```
+
+Create folders on Windows PowerShell:
+```powershell
+New-Item -ItemType Directory -Force -Path "data\raw\ham10000", "data\raw\pad_ufes_20", "data\raw\fitzpatrick17k"
+```
+
+* **HAM10000**: Download from [Harvard Dataverse](https://doi.org/10.7910/DVN/DBW86T) or [Kaggle](https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000). Place zip files into `data/raw/ham10000/`.
+* **PAD-UFES-20**: Download from [Mendeley Data](https://data.mendeley.com/datasets/zr7vgbcyr2/1) or [Kaggle](https://www.kaggle.com/datasets/mahdavi1202/skin-cancer). Place into `data/raw/pad_ufes_20/`.
+* **Fitzpatrick17k**: Handled automatically when starting `train.py`.
+
+---
+
+## Model Training
+
+To begin training:
 ```bash
 python train.py
 ```
 
-It runs these steps in order, skipping any that are already complete:
-1️⃣ Verify CUDA availability.
-2️⃣ Organise loose files into `data/raw/<dataset>/`.
-3️⃣ Download the Fitzpatrick17k images.
-4️⃣ Build captions, cap class sizes, and resize every image to 512 × 512 (2 % held‑out for evaluation).
-5️⃣ Train the LoRA on the GPU.
-6️⃣ **Export** a standalone pipeline into `medsynth-model/pipeline/` and write a completion marker.
+`train.py` automatically handles:
+1. CUDA verification and mixed-precision configuration (bf16/fp16).
+2. Archive extraction and image preprocessing (512x512 with safe augmentations).
+3. 2% held-out test split creation under `data/prepared/heldout.jsonl`.
+4. LoRA fine-tuning of Stable Diffusion 1.5 with auto-batched gradient accumulation.
+5. Periodic sampling previews under `medsynth-model/samples/`.
+6. Full standalone pipeline export into `medsynth-model/pipeline/`.
 
-**Stopped or crashed?** Just run `python train.py` again. It resumes from the newest
-checkpoint (saved every 1,000 steps). **Already finished?** Running it again prints where the
-model is and exits, so you can never retrain by accident.
+**Resuming**: If training is interrupted, re-running `python train.py` automatically detects and resumes from the latest checkpoint under `medsynth-model/checkpoints/`.
 
-**First-time check:** set `smoke_test = True` in the config (below) and run it once. It uses a
-small slice of each dataset, 40 steps, and writes to its own `medsynth-smoketest/` folder.
-Then set it back to `False`.
+### GPU Memory Requirements
 
-### What one epoch looks like
-Every epoch draws from the three views in fixed proportions (35 % dermoscopy, 25 % smartphone,
-40 % clinical) so the small PAD-UFES-20 set is not drowned out. Each view also gets only the
-augmentations that make sense for it: dermoscopy is flipped and rotated freely; smartphone and
-clinical photos are only mirrored, so gravity and anatomy stay realistic.
-
-### GPU speed
-Training runs on CUDA with mixed precision (bf16 or fp16), TF32, cuDNN autotuning and a fused
-optimizer. The batch settings are chosen from your VRAM automatically while keeping 16 images
-per optimizer step. These thresholds are estimates:
-
-| VRAM | Batch × accumulation | Gradient checkpointing |
+| VRAM | Batch Size × Accumulation | Gradient Checkpointing |
 |---|---|---|
-| 20 GB+ | 4 × 4 | off |
-| 14–20 GB | 2 × 8 | off |
-| 10–14 GB | 2 × 8 | on |
-| under 10 GB | 1 × 16 | on |
+| 20 GB+ | 4 × 4 | Off |
+| 14–20 GB | 2 × 8 | Off |
+| 10–14 GB | 2 × 8 | On |
+| Under 10 GB | 1 × 16 | On |
 
-Rough time for the default 15,000 steps is on the order of half a day on a 24 GB card and
-longer on slower ones. Check the `it/s` in the progress bar, and look at `medsynth-model/samples/`
-(4 preview images, one per view, every 1,000 steps).
+---
 
-## 5. Configuration (the only place you edit)
+## Quality Checks
 
-There are no command-line arguments. Open `train.py` and edit the **CONFIG** section near the top.
+* Evaluate synthetic lesions against real images using the held-out dataset at `data/prepared/heldout.jsonl`.
+* Compute FID (Fréchet Inception Distance) or train downstream diagnostic classifiers on synthetic sets to measure transfer accuracy.
+* Inspect preview progressions across checkpoints in `medsynth-model/samples/` to monitor convergence.
 
-### Per dataset (`DATASETS`)
+---
 
-| Setting | HAM10000 | PAD-UFES-20 | Fitzpatrick17k | Meaning |
-|---|---|---|---|---|
-| `caption_prefix` | dermoscopy image of | smartphone photo of | clinical photo of | how the view is named in prompts |
-| `sample_share` | 0.35 | 0.25 | 0.40 | share of each epoch |
-| `max_per_class` | 1200 | 1200 | 600 | cap per diagnosis so common ones don't dominate |
-| `min_side` | 256 | 128 | 128 | drop images smaller than this (avoids blurry upscaling) |
-| `hflip / vflip / rot90` | yes / yes / yes | yes / no / no | yes / no / no | safe augmentations |
-| `use_category` | yes | yes | yes | add benign / malignant / pre-malignant |
-| `use_body_site` | yes | yes | no (not in data) | add e.g. "back", "face" |
-| `use_skin_type` | no (not in data) | yes | yes | add "Fitzpatrick skin type N" |
+## Troubleshooting
 
-### General (`Config`)
-
-| Setting | Default | Notes |
-|---|---|---|
-| `max_train_steps` | 15000 | try 5000 for a quicker first model |
-| `effective_batch` / `auto_batch` | 16 / True | set `auto_batch = False` to use `batch_size`, `grad_accum`, `gradient_checkpointing` yourself |
-| `learning_rate`, `rank` | 1e-4, 32 | LoRA rank 64 gives more capacity |
-| `resolution` | 512 | |
-| `require_all_datasets` | True | set False to train on whichever datasets you have |
-| `retrain` | False | True discards checkpoints and trains from scratch (set it back afterwards) |
-| `smoke_test` | False | quick end-to-end check |
-| `num_workers` | 2 (0 on Windows) | |
-
-## 6. Run the app
-
-```bash
-python main.py
-```
-
-`main.py` loads `medsynth-model/pipeline` from disk (offline) onto the GPU once at startup and
-reuses it for every prompt. To use a model stored elsewhere:
-`MEDSYNTH_MODEL_DIR=/path/to/pipeline python main.py`.
-
-### Writing prompts
-Prompts work best in the same grammar as the training captions. Choose **Dermoscopy /
-Smartphone / Clinical photo** in the app; with *Clinical prompt enhancement* on, the matching
-prefix is added for you, so you type the rest:
-
-```
-melanoma, malignant, back
-basal cell carcinoma, malignant, face, Fitzpatrick skin type 2
-psoriasis, non-neoplastic, Fitzpatrick skin type 5
-```
-
-Free text works too — enhancement maps what you wrote onto that grammar:
-
-```
-a mole on the left arm of a fitzpatrick 3 patient   ->  smartphone photo of melanocytic nevus,
-                                                         benign, arm, Fitzpatrick skin type 3, …
-irregular lesion, pigment network, upper extremity  ->  dermoscopy image of … , upper extremity, …
-```
-
-Expand **How the prompt is built** under the composer to see the exact caption that will be sent,
-the token count, and which parts were recognised.
-
-`medsynth-model/prompt_examples.txt` lists one example caption per class (HAM10000 has 7,
-PAD-UFES-20 has 7, Fitzpatrick17k has 114). Use the skin-type phrase (1 to 6) to steer skin
-tone. Good settings: 30 steps, guidance 6 to 8.
-
-### Clinical prompt enhancement
-The fine-tune only ever saw short captions shaped
-`<view> of <diagnosis>, <category>, <body site>, <Fitzpatrick type>`. Enhancement keeps you
-inside that distribution instead of layering prose on top of it. It:
-
-1. picks the caption prefix for the view you selected,
-2. normalises your wording onto the dataset vocabulary (`bcc` → `basal cell carcinoma`,
-   `left arm` → `arm`, `fitzpatrick 3` → `Fitzpatrick skin type 3`),
-3. infers what you left out — a matched diagnosis supplies its category,
-4. appends the imaging terms that view needs (`10x magnification`, `polarized illumination`,
-   …) while budget allows.
-
-Turn it off to send your text verbatim. Either way the caption is capped at **75 CLIP tokens**,
-which is what keeps the tokenizer from rejecting long prompts.
-
-### Conversations
-Every thread is stored in `results/medsynth_history.sqlite3` together with its images.
-
-- **New conversation** starts a fresh thread; the sidebar lists all of them with message and
-  image counts and a relative timestamp.
-- **Search** filters by title *and* by anything said inside a thread.
-- **Clear chat** empties a thread but keeps it; **Delete conversation** needs two clicks so a
-  mis-click cannot lose history.
-- Generation settings (view, steps, guidance, seed, negative prompt) are saved **per
-  conversation** — switching threads restores the setup that thread was last used with.
-- **Shuffle** rolls a new seed, and every generated image records the seed that produced it, so
-  a good result can be reproduced by pasting that number back into the seed field.
-
-### Using the model in other projects
-
-```python
-import torch
-from diffusers import StableDiffusionPipeline
-
-pipe = StableDiffusionPipeline.from_pretrained(
-    "medsynth-model/pipeline", torch_dtype=torch.float16, local_files_only=True
-).to("cuda")
-image = pipe("dermoscopy image of melanoma, malignant, back",
-             num_inference_steps=30, guidance_scale=6.5).images[0]
-```
-Back up `medsynth-model/pipeline`. For a small file to share, use
-`medsynth-model/lora/pytorch_lora_weights.safetensors` with `pipe.load_lora_weights(...)` on the
-same SD 1.5 base.
-
-## 7. Check quality
-`data/prepared/heldout.jsonl` lists 2 % of images kept out of training. Generate from their
-captions and compare with those real images (FID/KID), or train a classifier on synthetic images
-and test it on real ones. If the previews stop improving, or start copying training images, use
-an earlier `medsynth-model/checkpoints/lora-step-*`.
-
-## 8. Troubleshooting
-
-| Symptom | Fix |
+| Issue | Cause & Solution |
 |---|---|
-| `CUDA is not available ... CPU-only build` | Reinstall PyTorch with CUDA (section 2). |
-| `CUDA out of memory` | Set `auto_batch = False`, `batch_size = 1`, `grad_accum = 16`, `gradient_checkpointing = True`. |
-| Loss becomes `nan` with fp16 | Set `mixed_precision = "bf16"` (RTX 30-series and newer) or `learning_rate = 5e-5`. |
-| Cannot start: some datasets are not ready | Follow the printed instructions; folder names must be `ham10000`, `pad_ufes_20`, `fitzpatrick17k`. |
-| App says "Trained model not found" | Training hasn't finished, or the model isn't at `medsynth-model/pipeline`. |
-| Many Fitzpatrick downloads fail | Expected for dead links. Set `retry_failed_downloads = True` to try them again. |
+| `uv pip install` fails on `requests` version | Ensure `requirements.txt` uses `--find-links https://download.pytorch.org/whl/cu121` instead of `--extra-index-url`. |
+| `CUDA is not available ... CPU-only build` | Reinstall PyTorch with CUDA 12.1 support matching your graphics driver. |
+| `CUDA out of memory` during training | In `train.py`, set `auto_batch = False`, `batch_size = 1`, `grad_accum = 16`, and `gradient_checkpointing = True`. |
+| Studio shows `Trained model not found` | Ensure `medsynth-model/pipeline/model_index.json` exists, or set `$env:MEDSYNTH_MODEL_DIR`. |
+| Port 8501 is already in use | Run `streamlit run main.py --server.port 8502`. |
 
-## 9. Read this before using the results
+---
 
-- The output is **synthetic data**. It must not be used for diagnosis or presented as real
-  patient images.
-- HAM10000 (CC BY-NC) and the Fitzpatrick17k image sources restrict commercial use. Treat the
-  trained weights as **research/non-commercial** unless you have cleared every licence.
-- The datasets are skewed (HAM10000 toward lighter skin, PAD-UFES-20 from one Brazilian region).
-  Fitzpatrick17k plus the skin-type captions helps, but check outputs across skin tones.
-- The benign / malignant / pre-malignant words are a simplified mapping made for prompting, not
-  clinical ground truth. Have a dermatologist review samples if the images feed research.
+## Responsible & Ethical Use
+
+* **Synthetic Data Only**: Outputs generated by Medsynth are artificial and must **never** be used as primary diagnostic criteria or represented as authentic patient photography.
+* **Licensing & Research Use**: HAM10000 (CC BY-NC 4.0) and Fitzpatrick17k sources contain non-commercial restrictions. Treat exported pipeline weights as research and educational artifacts.
+* **Demographic Diversity**: Datasets have historical representation skews. Always evaluate multi-tone representation across Fitzpatrick skin types I through VI when building downstream models.
