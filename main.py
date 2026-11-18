@@ -48,15 +48,6 @@ DEFAULT_SETTINGS = dict(chat_history.SETTINGS_DEFAULTS)
 DEFAULT_SETTINGS["negative_prompt"] = DEFAULT_NEGATIVE_PROMPT
 DEFAULT_SETTINGS["clinical"] = True
 
-ENHANCEMENT_FOOTER_NOTE = (
-    "The fine-tune was trained on short captions in a fixed grammar: "
-    "`<view> of <diagnosis>, <category>, <body site>, <Fitzpatrick type>`. "
-    "Clinical enhancement parses your description, normalizes it into this grammar, "
-    "infers missing clinical elements, and appends the appropriate imaging terms "
-    "within CLIP's 75-token budget."
-)
-
-
 def get_effective_model_dir() -> Path:
     if (MODEL_DIR / "model_index.json").is_file():
         return MODEL_DIR
@@ -164,13 +155,6 @@ def _relative_stamp(value):
     return moment.strftime("%d %b")
 
 
-def _short_title(title, max_len=26):
-    title = " ".join((title or "New conversation").split())
-    if len(title) > max_len:
-        return title[: max_len - 1].rstrip() + "…"
-    return title
-
-
 def _metadata_caption(plan, image_type, steps, guidance, used_seed):
     caption = plan.as_caption() if plan.enhanced else (plan.text or "custom prompt")
     facts = [
@@ -202,8 +186,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = False
+
 # ---------------------------------------------------------------------------
-# De-Cluttered Clinical Light Theme CSS
+# Streamlined Clinical UI
 # ---------------------------------------------------------------------------
 st.markdown(
     """
@@ -236,9 +223,9 @@ html, body, [class*="css"] {
     background-color: var(--bg-page);
 }
 
-/* Page container top padding reduction to eliminate empty top space */
+/* Keep the first controls clear of Streamlit's fixed toolbar. */
 .block-container {
-    padding-top: 1.6rem !important;
+    padding-top: 3.5rem !important;
     padding-bottom: 2.5rem !important;
     max-width: 1160px !important;
 }
@@ -291,7 +278,7 @@ section[data-testid="stSidebar"] h3 {
     letter-spacing: 0.05em;
 }
 
-/* Hardware status badge */
+/* Hardware status */
 .hw-pill {
     display: inline-flex;
     align-items: center;
@@ -367,6 +354,19 @@ section[data-testid="stSidebar"] h3 {
     color: #0f172a !important;
 }
 
+div[class*="st-key-select_conv_"] button {
+    justify-content: flex-start !important;
+    text-align: left !important;
+}
+div[class*="st-key-select_conv_"] button [data-testid="stMarkdownContainer"] p {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow-wrap: anywhere;
+    margin: 0;
+}
+
 /* Danger Button */
 .danger-btn button {
     background-color: #fff1f2 !important;
@@ -394,61 +394,6 @@ section[data-testid="stSidebar"] h3 {
     letter-spacing: -0.02em;
     margin: 0 0 2px 0;
 }
-.studio-title-area p {
-    font-size: 12px;
-    color: #64748b;
-    margin: 0;
-}
-
-/* Clinical Badge */
-.clinical-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    background: #f0fdfa;
-    border: 1px solid #99f6e4;
-    border-radius: 999px;
-    color: #0f766e;
-    font-size: 11px;
-    font-weight: 600;
-}
-.clinical-badge-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #0d9488;
-}
-
-/* Token Cost Meter */
-.token-meter-container {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: var(--radius-sm);
-    padding: 5px 12px;
-    font-size: 11.5px;
-    color: #334155;
-}
-.token-meter-bar {
-    width: 48px;
-    height: 6px;
-    background: #e2e8f0;
-    border-radius: 999px;
-    overflow: hidden;
-}
-.token-meter-fill {
-    height: 100%;
-    background: #0d9488;
-    border-radius: inherit;
-    transition: width 0.2s ease;
-}
-.token-meter-fill.warn {
-    background: #f59e0b;
-}
-
 /* User Message Bubble */
 .user-msg-bubble {
     background: #0f172a;
@@ -466,20 +411,19 @@ section[data-testid="stSidebar"] h3 {
     color: #5eead4;
 }
 
-/* Assistant Message Card */
-.assistant-msg-card {
-    background: #ffffff;
+/* Generated image inside the assistant card */
+div[data-testid="stImage"] img {
+    border-radius: 12px;
     border: 1px solid #e2e8f0;
-    border-radius: 14px;
-    padding: 16px;
-    margin-right: auto;
-    max-width: 88%;
-    margin-bottom: 18px;
     box-shadow: var(--shadow-sm);
+    max-width: 420px;
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
 }
 .ms-cap {
-    margin-top: 10px;
-    padding: 8px 12px;
+    margin-top: 0;
+    padding: 10px 14px;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
     background: #f8fafc;
@@ -492,51 +436,6 @@ section[data-testid="stSidebar"] h3 {
     font-size: 10.5px;
     display: inline-block;
     margin-top: 2px;
-}
-
-/* Clean Empty State Welcome Card */
-.empty-state-card {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: var(--radius-md);
-    padding: 24px 20px 20px;
-    text-align: center;
-    margin: 16px auto 14px;
-    max-width: 620px;
-    box-shadow: var(--shadow-sm);
-}
-.empty-state-title {
-    font-size: 17px;
-    font-weight: 700;
-    color: #0f172a;
-    margin-bottom: 4px;
-}
-.empty-state-desc {
-    font-size: 12.5px;
-    color: #64748b;
-    margin-bottom: 14px;
-    line-height: 1.4;
-}
-.prompt-chips-label {
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: #475569;
-    letter-spacing: 0.04em;
-    margin-bottom: 8px;
-}
-
-/* Clean Prompt Suggestion Button */
-.sample-prompt-btn {
-    text-align: left !important;
-    background: #f8fafc !important;
-    border: 1px solid #e2e8f0 !important;
-    border-radius: 8px !important;
-    padding: 8px 14px !important;
-    margin-bottom: 6px !important;
-    color: #0f172a !important;
-    font-size: 12px !important;
-    font-family: monospace !important;
 }
 
 /* Custom inputs styling */
@@ -556,16 +455,6 @@ div[data-testid="stNumberInput"] input:focus {
     box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.12) !important;
 }
 
-/* Radio buttons horizontal styling */
-div[data-testid="stRadio"] > div {
-    gap: 8px;
-}
-div[data-testid="stRadio"] label {
-    font-size: 12px !important;
-    font-weight: 600 !important;
-    color: #1e293b !important;
-}
-
 /* Expander styling clean */
 div[data-testid="stExpander"] {
     background-color: #ffffff !important;
@@ -574,35 +463,140 @@ div[data-testid="stExpander"] {
     margin-bottom: 8px !important;
 }
 
-/* Studio Footer */
-.studio-footer {
-    margin-top: 36px;
-    padding: 14px 18px;
-    border-top: 1px solid #e2e8f0;
-    background: #ffffff;
-    border-radius: var(--radius-sm);
-    color: #64748b;
-    font-size: 11.5px;
-    line-height: 1.5;
-    box-shadow: var(--shadow-sm);
-}
-.studio-footer code {
-    background: #f1f5f9;
-    padding: 2px 6px;
-    border-radius: 4px;
-    color: #0f766e;
-    font-size: 11px;
-}
-.footer-subtext {
-    margin-top: 5px;
-    font-size: 10.5px;
-    color: #94a3b8;
-    text-align: right;
-}
 </style>
 """,
     unsafe_allow_html=True,
 )
+
+if st.session_state.dark_mode:
+    st.markdown(
+        """
+<style>
+:root {
+    color-scheme: dark;
+    --primary: #0f766e;
+    --primary-hover: #115e59;
+    --primary-light: #123b3b;
+    --primary-border: #2dd4bf;
+    --text-main: #e2e8f0;
+    --text-muted: #cbd5e1;
+    --text-subtle: #94a3b8;
+    --bg-page: #0b1220;
+    --bg-card: #111b2e;
+    --border-color: #334155;
+    --border-focus: #2dd4bf;
+}
+
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+    background-color: #0b1220 !important;
+    color: #e2e8f0 !important;
+}
+header[data-testid="stHeader"] {
+    background-color: #0b1220 !important;
+}
+section[data-testid="stSidebar"] {
+    background-color: #111827 !important;
+    border-right-color: #334155 !important;
+}
+.brand-title, .studio-title-area h2,
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {
+    color: #e2e8f0 !important;
+}
+.brand-icon {
+    background: #123b3b;
+    border-color: #2dd4bf;
+}
+.sidebar-section-title,
+div[data-testid="stCaptionContainer"] {
+    color: #94a3b8 !important;
+}
+.stButton button[kind="primary"] {
+    background-color: #0f766e !important;
+    border-color: #0f766e !important;
+}
+.stButton button[kind="primary"]:hover {
+    background-color: #115e59 !important;
+    border-color: #115e59 !important;
+}
+.stButton button[kind="secondary"],
+.stButton button:not([kind="primary"]) {
+    background-color: #162235 !important;
+    color: #e2e8f0 !important;
+    border-color: #334155 !important;
+}
+.stButton button[kind="secondary"]:hover,
+.stButton button:not([kind="primary"]):hover {
+    background-color: #1e293b !important;
+    border-color: #64748b !important;
+    color: #f8fafc !important;
+}
+div[data-testid="stExpander"] {
+    background-color: #111b2e !important;
+    border-color: #334155 !important;
+}
+div[data-testid="stImage"] img {
+    border-color: #334155;
+}
+.ms-cap {
+    background-color: #162235;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+.ms-cap__meta {
+    color: #94a3b8;
+}
+div[data-testid="stTextInput"] input,
+div[data-testid="stTextArea"] textarea,
+div[data-testid="stNumberInput"] input {
+    background-color: #162235 !important;
+    color: #f8fafc !important;
+    border-color: #475569 !important;
+}
+div[data-testid="stTextInput"] input::placeholder,
+div[data-testid="stTextArea"] textarea::placeholder {
+    color: #94a3b8 !important;
+}
+div[data-testid="stSelectbox"] [data-baseweb="select"] > div {
+    background-color: #162235 !important;
+    color: #f8fafc !important;
+    border-color: #475569 !important;
+}
+div[data-testid="stSelectbox"] [data-baseweb="select"] * {
+    color: #f8fafc !important;
+}
+div[data-baseweb="popover"] > div,
+ul[role="listbox"],
+li[role="option"] {
+    background-color: #162235 !important;
+    color: #f8fafc !important;
+}
+div[data-testid="stExpander"] summary,
+div[data-testid="stExpander"] label,
+div[data-testid="stSlider"] label,
+div[data-testid="stToggle"] label {
+    color: #e2e8f0 !important;
+}
+.hw-pill--gpu {
+    background: #123b2b;
+    color: #a7f3d0;
+    border-color: #166534;
+}
+.hw-pill--cpu {
+    background: #3b2d16;
+    color: #fde68a;
+    border-color: #854d0e;
+}
+.danger-btn button {
+    background-color: #3b1720 !important;
+    color: #fda4af !important;
+    border-color: #881337 !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
 
 # ---------------------------------------------------------------------------
 # Session State Initialization
@@ -658,7 +652,8 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # 2. Hardware / GPU Status Badge
+    st.toggle("Dark mode", key="dark_mode")
+
     is_gpu, device_label = get_device_info()
     pill_class = "hw-pill--gpu" if is_gpu else "hw-pill--cpu"
     st.markdown(
@@ -671,7 +666,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # 3. "+ New Conversation" Button
+    # New conversation
     if st.button("＋  New Conversation", key="btn_new_conv", type="primary"):
         new_id = chat_history.create_conversation(
             {
@@ -690,7 +685,7 @@ with st.sidebar:
         st.session_state.prompt_draft = ""
         st.rerun()
 
-    # 4. Search Filter
+    # 3. Search conversations
     st.markdown('<div class="sidebar-section-title">Conversations</div>', unsafe_allow_html=True)
     search_input = st.text_input(
         "Search conversations",
@@ -703,7 +698,7 @@ with st.sidebar:
         st.session_state.search_query = search_input
         st.rerun()
 
-    # 5. Clean, Compact Conversation List
+    # 4. Conversation list
     conversations = chat_history.list_conversations(st.session_state.search_query)
 
     if not conversations:
@@ -717,28 +712,22 @@ with st.sidebar:
             is_active = cid == st.session_state.conversation_id
             is_pinned = bool(conv.get("pinned", 0))
             pin_badge = "📌 " if is_pinned else ""
-            title_display = f"{pin_badge}{_short_title(conv['title'], 24)}"
-
-            msg_count = conv.get("message_count", 0)
-            img_count = conv.get("image_count", 0)
             time_stamp = _relative_stamp(conv.get("updated_at", ""))
-
-            # Clean button label with compact subtitle
-            button_label = f"{title_display} · {time_stamp}"
+            title_display = f"{pin_badge}{conv['title'] or 'New conversation'}"
 
             if st.button(
-                button_label,
+                title_display,
                 key=f"select_conv_{cid}",
                 type="primary" if is_active else "secondary",
                 use_container_width=True,
-                help=f"{conv['title']} — {img_count} img(s), {msg_count} msg(s)",
+                help=f"{conv['title'] or 'New conversation'}\nUpdated {time_stamp}",
             ):
                 if st.session_state.conversation_id != cid:
                     st.session_state.conversation_id = cid
                     st.session_state.delete_confirm_id = None
                     st.rerun()
 
-    # 6. De-Cluttered Thread Management (Organized in Clean Expander)
+    # 5. Thread management
     active_conv = chat_history.get_conversation(st.session_state.conversation_id)
     if active_conv:
         st.markdown('<div class="sidebar-section-title">Current Thread</div>', unsafe_allow_html=True)
@@ -809,7 +798,7 @@ with st.sidebar:
                     st.session_state.delete_confirm_id = active_conv["id"]
                     st.rerun()
 
-    # 7. Clean Generation Settings (Without Long Footnote)
+    # 6. Generation settings
     st.markdown('<div class="sidebar-section-title">Generation Settings</div>', unsafe_allow_html=True)
     with st.expander("🎛️ Parameters & Modifiers", expanded=False):
         steps_val = st.slider(
@@ -875,62 +864,33 @@ with st.sidebar:
 # MAIN AREA: Clean, Balanced Skin Image Studio
 # ---------------------------------------------------------------------------
 
-# Studio Top Bar (Clean & Compact)
-top_left, top_right = st.columns([5, 4])
+# Studio header and image type
+top_left, top_right = st.columns([4, 1])
 
 with top_left:
     st.markdown(
         """
         <div class="studio-title-area">
             <h2>Skin Image Studio</h2>
-            <p>Conditioned on fine-tuned dermatological grammar. For research & education.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 with top_right:
-    # Modality selector + Token Meter in clean row
-    col_mod, col_tok = st.columns([3, 2])
-    with col_mod:
-        current_image_type = current_settings.get("image_type", "Dermoscopy")
-        image_types_list = list(IMAGE_TYPES_DICT.keys())
-        type_idx = image_types_list.index(current_image_type) if current_image_type in image_types_list else 0
+    current_image_type = current_settings.get("image_type", "Dermoscopy")
+    image_types_list = list(IMAGE_TYPES_DICT.keys())
+    type_idx = image_types_list.index(current_image_type) if current_image_type in image_types_list else 0
 
-        selected_image_type = st.radio(
-            "Capture View",
-            options=image_types_list,
-            index=type_idx,
-            horizontal=True,
-            label_visibility="collapsed",
-            key=f"modality_radio_{st.session_state.conversation_id}",
-        )
-        if selected_image_type != current_image_type:
-            chat_history.save_settings(st.session_state.conversation_id, image_type=selected_image_type)
-            current_settings["image_type"] = selected_image_type
-
-    with col_tok:
-        sample_text = st.session_state.prompt_draft or ""
-        plan_preview = prompt_enhancer.build_plan(sample_text, True, selected_image_type)
-        usage_pct = min(100, int((plan_preview.tokens / plan_preview.limit) * 100))
-        warn_class = "warn" if plan_preview.tokens >= plan_preview.limit - 5 else ""
-
-        st.markdown(
-            f"""
-            <div class="token-meter-container">
-                <span style="font-weight: 600; font-size: 11px;">CLIP:</span>
-                <div class="token-meter-bar">
-                    <div class="token-meter-fill {warn_class}" style="width: {usage_pct}%;"></div>
-                </div>
-                <strong style="color: {'#d97706' if warn_class else '#0f172a'}; font-size: 11px;">
-                    {plan_preview.tokens}/{plan_preview.limit}
-                </strong>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-st.markdown("<hr style='margin: 10px 0 16px 0; border: none; border-top: 1px solid #e2e8f0;'/>", unsafe_allow_html=True)
+    selected_image_type = st.selectbox(
+        "Image type",
+        options=image_types_list,
+        index=type_idx,
+        key=f"image_type_select_{st.session_state.conversation_id}",
+    )
+    if selected_image_type != current_image_type:
+        chat_history.save_settings(st.session_state.conversation_id, image_type=selected_image_type)
+        current_settings["image_type"] = selected_image_type
 
 # ---------------------------------------------------------------------------
 # Message Stream / History
@@ -938,42 +898,7 @@ st.markdown("<hr style='margin: 10px 0 16px 0; border: none; border-top: 1px sol
 messages = chat_history.get_messages(st.session_state.conversation_id)
 
 if not messages:
-    # Clean, Spacious Empty State Welcome Card with Non-Clustered Prompts
-    st.markdown(
-        """
-        <div class="empty-state-card">
-            <div style="font-size: 28px; margin-bottom: 6px;">🔬</div>
-            <div class="empty-state-title">Start a New Synthesis</div>
-            <div class="empty-state-desc">
-                Describe the diagnosis, category, body site, and Fitzpatrick skin type.
-                Clinical enhancement formats input into trained diffusion grammar automatically.
-            </div>
-            <div class="prompt-chips-label">Select an example prompt to begin:</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    p1 = "dermoscopy image of melanoma, malignant, back"
-    p2 = "smartphone photo of basal cell carcinoma, malignant, face, Fitzpatrick skin type 2"
-    p3 = "clinical photo of psoriasis, non-neoplastic, Fitzpatrick skin type 5"
-
-    col_space_l, col_prompts, col_space_r = st.columns([1, 8, 1])
-    with col_prompts:
-        if st.button(f"🔬  {p1}", key="chip_p1", use_container_width=True):
-            st.session_state.prompt_draft = p1
-            chat_history.save_settings(st.session_state.conversation_id, image_type="Dermoscopy")
-            st.rerun()
-
-        if st.button(f"📱  {p2}", key="chip_p2", use_container_width=True):
-            st.session_state.prompt_draft = p2
-            chat_history.save_settings(st.session_state.conversation_id, image_type="Smartphone")
-            st.rerun()
-
-        if st.button(f"📷  {p3}", key="chip_p3", use_container_width=True):
-            st.session_state.prompt_draft = p3
-            chat_history.save_settings(st.session_state.conversation_id, image_type="Clinical photo")
-            st.rerun()
+    st.caption("Describe a skin condition below to create a synthetic image.")
 
 else:
     # Render messages with comfortable breathing room
@@ -988,42 +913,52 @@ else:
                 unsafe_allow_html=True,
             )
         else:
-            with st.container():
-                st.markdown('<div class="assistant-msg-card">', unsafe_allow_html=True)
-                col_img, col_details = st.columns([1, 1])
+            content = msg.get("content", "")
 
+            with st.container(border=True):
                 if msg.get("image"):
+                    # Compact image on the left; metadata + download button
+                    # on the right, vertically centred against the image.
+                    col_img, col_details = st.columns(
+                        [0.6, 1], gap="large", vertical_alignment="center"
+                    )
+
                     try:
                         img_bytes = msg["image"]
                         image_obj = Image.open(BytesIO(img_bytes)).convert("RGB")
+
+                        # Preview only: cap the resolution so the chat stays
+                        # light. The download button still serves the original.
+                        preview = image_obj.copy()
+                        preview.thumbnail((448, 448), Image.LANCZOS)
+
                         with col_img:
-                            st.image(
-                                image_obj,
-                                caption="Generated Synthetic Lesion",
-                                use_container_width=True,
-                            )
-                            st.download_button(
-                                label="📥 Download PNG",
-                                data=img_bytes,
-                                file_name=f"medsynth_{msg['id']}.png",
-                                mime="image/png",
-                                key=f"dl_btn_{msg['id']}",
-                                use_container_width=True,
-                            )
+                            st.image(preview, use_container_width=True)
                     except Exception as err:
                         with col_img:
                             st.error(f"Image display error: {err}")
 
-                with col_details:
-                    content = msg.get("content", "")
-                    if content.startswith("Generation failed:"):
-                        st.error(content)
-                    else:
-                        st.markdown(content, unsafe_allow_html=True)
+                    with col_details:
+                        if content.startswith("Generation failed:"):
+                            st.error(content)
+                        else:
+                            st.markdown(content, unsafe_allow_html=True)
 
-                    st.caption("Synthetic dermatological rendering via Medsynth SD-1.5 fine-tune.")
-
-                st.markdown("</div>", unsafe_allow_html=True)
+                        st.download_button(
+                            label="📥 Download PNG",
+                            data=img_bytes,
+                            file_name=f"medsynth_{msg['id']}.png",
+                            mime="image/png",
+                            key=f"dl_btn_{msg['id']}",
+                            use_container_width=True,
+                        )
+                        st.caption(
+                            "Synthetic dermatological rendering via Medsynth SD-1.5 fine-tune."
+                        )
+                elif content.startswith("Generation failed:"):
+                    st.error(content)
+                else:
+                    st.markdown(content, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Prompt Composer Input Bar
@@ -1124,20 +1059,4 @@ if generate_clicked and user_prompt.strip():
 
     st.rerun()
 
-# ---------------------------------------------------------------------------
-# Clean Footer: Shifted Clinical Explanation
-# ---------------------------------------------------------------------------
-st.markdown(
-    f"""
-    <div class="studio-footer">
-        <div>
-            <span style="font-size: 13px;">💡</span>
-            <span>{html.escape(ENHANCEMENT_FOOTER_NOTE).replace('`', '<code>', 1).replace('`', '</code>', 1)}</span>
-        </div>
-        <div class="footer-subtext">
-            Medsynth Diffusion • HAM10000 · PAD-UFES-20 · Fitzpatrick17k • Synthetic Research & Educational Tool
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+st.caption("Synthetic images are for research and education, not clinical diagnosis.")

@@ -14,3 +14,6 @@ main_gradio_backup.py
 .streamlit
 .streamlit/*
 !.streamlit/config.toml
+video-assets/
+*.mp4
+
