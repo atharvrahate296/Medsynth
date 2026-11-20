@@ -4,9 +4,11 @@ import os
 import random
 import re
 import threading
+import time
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
+from uuid import uuid4
 
 # Offline mode: always use local fine-tuned weights, never connect to HF Hub
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -989,8 +991,182 @@ if user_prompt != st.session_state.prompt_draft:
     st.session_state.prompt_draft = user_prompt
 
 # ---------------------------------------------------------------------------
+# Generation Jobs
+# ---------------------------------------------------------------------------
+# Inference runs in a background worker instead of the Streamlit script
+# thread. Blocking the script thread for a multi-minute diffusion pass stops
+# all websocket traffic, which is what produced the "Connection error" dialog
+# when a run outlived the connection. The worker publishes its phase and step
+# progress into a plain dict; the script thread polls that dict, streams a
+# progress bar on every tick (keeping the socket chatty) and sleeps between
+# polls so the GIL stays available to Streamlit's event loop. Job state lives
+# outside st.session_state, so a browser that reconnects mid-run resumes the
+# same progress view and the result still lands in the chat history.
+
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+_JOB_ACTIVE_STATUSES = ("queued", "loading", "sampling")
+
+
+def _find_job(job_id):
+    if not job_id:
+        return None
+    with _jobs_lock:
+        return _jobs.get(job_id)
+
+
+def _find_job_for_conversation(conversation_id):
+    """A still-running job for this thread, used to resume after a reconnect."""
+    with _jobs_lock:
+        candidates = [
+            job
+            for job in _jobs.values()
+            if job["conversation_id"] == conversation_id
+        ]
+    for job in reversed(candidates):
+        if job["status"] in _JOB_ACTIVE_STATUSES:
+            return job
+    return None
+
+
+def _run_generation_job(job, plan, image_type, steps, cfg, seed, negative_prompt):
+    """Worker thread: load the pipeline, sample, and persist the result.
+
+    The result is written straight to the chat history here so it survives
+    even if the browser is gone by the time sampling finishes.
+    """
+    try:
+        import torch
+
+        job["status"] = "loading"
+        pipeline, device = load_pipeline()
+
+        job["status"] = "sampling"
+        job["total_steps"] = int(steps)
+
+        generator = torch.Generator(device=device).manual_seed(int(seed))
+
+        def _on_step_end(_pipe, step, _timestep, callback_kwargs):
+            job["step"] = int(step) + 1
+            return callback_kwargs
+
+        with _generation_lock:
+            result = pipeline(
+                prompt=plan.text,
+                negative_prompt=negative_prompt,
+                num_inference_steps=int(steps),
+                guidance_scale=float(cfg),
+                generator=generator,
+                callback_on_step_end=_on_step_end,
+                callback_on_step_end_tensor_inputs=["latents"],
+            )
+
+        image = result.images[0]
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        img_bytes = buffer.getvalue()
+
+        caption = _metadata_caption(plan, image_type, steps, cfg, seed)
+        chat_history.add_message(
+            job["conversation_id"],
+            "assistant",
+            caption,
+            image=img_bytes,
+            image_mime="image/png",
+        )
+        job["status"] = "done"
+    except Exception as exc:  # surfaced verbatim as an assistant message
+        job["error"] = str(exc)
+        job["status"] = "error"
+        try:
+            chat_history.add_message(
+                job["conversation_id"],
+                "assistant",
+                f"Generation failed: {exc}",
+            )
+        except Exception:
+            pass
+
+
+def _start_generation_job(
+    conversation_id, plan, image_type, steps, cfg, seed, negative_prompt
+):
+    job = {
+        "id": uuid4().hex,
+        "conversation_id": conversation_id,
+        "status": "queued",
+        "step": 0,
+        "total_steps": int(steps),
+        "error": None,
+    }
+    with _jobs_lock:
+        # Finished jobs are no longer resumable; drop them so the registry
+        # only ever grows with genuinely running work.
+        for stale_id in [
+            jid for jid, j in _jobs.items() if j["status"] not in _JOB_ACTIVE_STATUSES
+        ]:
+            _jobs.pop(stale_id, None)
+        _jobs[job["id"]] = job
+
+    threading.Thread(
+        target=_run_generation_job,
+        args=(job, plan, image_type, steps, cfg, seed, negative_prompt),
+        daemon=True,
+        name="medsynth-generation",
+    ).start()
+    return job
+
+
+def _render_generation_progress(job):
+    """Poll the worker, streaming a live progress bar until the job settles.
+
+    Each tick is a UI delta on the websocket, so the connection stays busy
+    for the whole run instead of sitting silent until it times out.
+    """
+    phase = st.empty()
+    bar = st.progress(0.0, text="Queued…")
+
+    while job["status"] in _JOB_ACTIVE_STATUSES:
+        status = job["status"]
+        step = int(job.get("step", 0))
+        total = max(int(job.get("total_steps", 0)), 0)
+
+        if status == "loading":
+            phase.caption("⏳ Loading model weights into GPU memory (first run only)…")
+            bar.progress(0.0, text="Loading pipeline…")
+        elif status == "sampling" and total:
+            phase.caption("🔬 Medsynth synthesis in progress… diffusion sampling")
+            bar.progress(
+                min(step / total, 1.0),
+                text=f"Diffusion sampling · step {step}/{total}",
+            )
+        else:
+            phase.caption("🔬 Medsynth synthesis in progress…")
+            bar.progress(0.0, text="Starting…")
+
+        time.sleep(0.3)
+
+    if job["status"] == "done":
+        bar.progress(1.0, text="Complete")
+        st.toast("Lesion image synthesized successfully!", icon="✅")
+    elif job["status"] == "error":
+        phase.empty()
+        bar.empty()
+        st.error(f"Generation error: {job['error']}")
+
+
+# ---------------------------------------------------------------------------
 # Generation Handler
 # ---------------------------------------------------------------------------
+# A job may already be running when this page renders — started before the
+# browser reconnected, or in another tab. Resume its progress view first.
+active_job = _find_job(st.session_state.get("generation_job_id"))
+if active_job is None:
+    active_job = _find_job_for_conversation(st.session_state.conversation_id)
+if active_job and active_job["status"] in _JOB_ACTIVE_STATUSES:
+    _render_generation_progress(active_job)
+    st.rerun()
+
 if generate_clicked and user_prompt.strip():
     prompt_text = user_prompt.strip()
 
@@ -1003,60 +1179,25 @@ if generate_clicked and user_prompt.strip():
     # Clear draft
     st.session_state.prompt_draft = ""
 
-    # 3. Perform generation with progress spinner
-    with st.spinner("🔬 Medsynth synthesis in progress… diffusion sampling"):
-        try:
-            import torch
+    # 3. Snapshot settings and start the worker (the seed must be concrete
+    #    before the job begins so the caption can record it).
+    used_seed = int(current_settings.get("seed", -1))
+    if used_seed < 0:
+        used_seed = random.randint(0, 2_147_483_647)
 
-            pipeline, device = load_pipeline()
+    job = _start_generation_job(
+        conversation_id=st.session_state.conversation_id,
+        plan=plan,
+        image_type=selected_image_type,
+        steps=int(current_settings.get("steps", 30)),
+        cfg=float(current_settings.get("guidance", 6.5)),
+        seed=used_seed,
+        negative_prompt=(current_settings.get("negative_prompt") or "").strip() or None,
+    )
+    st.session_state.generation_job_id = job["id"]
 
-            used_seed = int(current_settings.get("seed", -1))
-            if used_seed >= 0:
-                generator = torch.Generator(device=device).manual_seed(used_seed)
-            else:
-                used_seed = random.randint(0, 2_147_483_647)
-                generator = torch.Generator(device=device).manual_seed(used_seed)
-
-            neg = (current_settings.get("negative_prompt") or "").strip() or None
-            steps_num = int(current_settings.get("steps", 30))
-            cfg_num = float(current_settings.get("guidance", 6.5))
-
-            with _generation_lock:
-                generated_image = pipeline(
-                    prompt=plan.text,
-                    negative_prompt=neg,
-                    num_inference_steps=steps_num,
-                    guidance_scale=cfg_num,
-                    generator=generator,
-                ).images[0]
-
-            # Buffer image to PNG bytes
-            buffer = BytesIO()
-            generated_image.save(buffer, format="PNG")
-            img_bytes = buffer.getvalue()
-
-            caption = _metadata_caption(
-                plan, selected_image_type, steps_num, cfg_num, used_seed
-            )
-
-            # Store in SQLite
-            chat_history.add_message(
-                st.session_state.conversation_id,
-                "assistant",
-                caption,
-                image=img_bytes,
-                image_mime="image/png",
-            )
-            st.toast("Lesion image synthesized successfully!", icon="✅")
-
-        except Exception as exc:
-            chat_history.add_message(
-                st.session_state.conversation_id,
-                "assistant",
-                f"Generation failed: {exc}",
-            )
-            st.error(f"Generation error: {exc}")
-
+    # 4. Stay on this run until it settles, streaming progress the whole way.
+    _render_generation_progress(job)
     st.rerun()
 
 st.caption("Synthetic images are for research and education, not clinical diagnosis.")

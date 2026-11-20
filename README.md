@@ -2,7 +2,7 @@
 
 Medsynth fine-tunes Stable Diffusion 1.5 with LoRA across three benchmark skin lesion datasets and ships a dedicated **Streamlit** clinical studio for generating synthetic dermatological images. Training and inference are fully decoupled: `train.py` prepares the datasets, trains, and exports the standalone pipeline; `main.py` runs the studio to synthesize images, tune generation parameters per thread, and manage clinical conversation histories in SQLite.
 
-> **Already have a trained model?** Keep `medsynth-model/pipeline/`, install the dependencies, and run `streamlit run main.py`. You do not need the source training datasets for image generation.
+> **✅ Current project status:** Training is **complete** — the model finished a full 15,000-step run and the standalone pipeline is exported at `medsynth-model/pipeline/`. If you just want to generate images, skip straight to [Using the Studio](#using-the-studio): you only need the dependencies, not the source datasets. Re-running `python train.py` is safe — it detects the finished model and does nothing.
 
 ---
 
@@ -12,7 +12,7 @@ Medsynth fine-tunes Stable Diffusion 1.5 with LoRA across three benchmark skin l
 - [The Three Modalities & Datasets](#the-three-modalities--datasets)
 - [Project Structure](#project-structure)
 - [Installation](#installation)
-- [Running the Streamlit Studio](#running-the-streamlit-studio)
+- [Using the Studio](#using-the-studio)
 - [Studio Features & UI Guide](#studio-features--ui-guide)
   - [Sidebar: Threads, Search & Settings](#sidebar-threads-search--settings)
   - [Appearance & Hardware Status](#appearance--hardware-status)
@@ -20,8 +20,14 @@ Medsynth fine-tunes Stable Diffusion 1.5 with LoRA across three benchmark skin l
   - [Token-Safe Prompting](#token-safe-prompting)
   - [Parameters & Modifiers](#parameters--modifiers)
   - [Chat Cards, Metadata & Download](#chat-cards-metadata--download)
-- [Dataset Preparation](#dataset-preparation)
-- [Model Training](#model-training)
+- [Training the Model](#training-the-model)
+  - [Step 1 — Prerequisites](#step-1--prerequisites)
+  - [Step 2 — Get the Datasets](#step-2--get-the-datasets)
+  - [Step 3 — Run the Trainer](#step-3--run-the-trainer)
+  - [What One Run Does](#what-one-run-does)
+  - [Outputs You Get](#outputs-you-get)
+  - [Resuming, Retraining & Smoke Test](#resuming-retraining--smoke-test)
+  - [GPU Memory Requirements](#gpu-memory-requirements)
 - [Training Configuration](#training-configuration)
 - [Quality Checks](#quality-checks)
 - [Troubleshooting](#troubleshooting)
@@ -33,16 +39,15 @@ Medsynth fine-tunes Stable Diffusion 1.5 with LoRA across three benchmark skin l
 
 | Task | Entry Point | Requirements |
 |---|---|---|
-| **Generate Images (Studio)** | `streamlit run main.py` | Exported `medsynth-model/pipeline/`, Python 3.10–3.12 |
-| **Train or Resume Training** | `python train.py` | Source datasets, CUDA-capable NVIDIA GPU, internet access for base SD 1.5 |
-| **Prepare Datasets** | Built into `train.py` | Place raw dataset archives into `data/raw/` |
+| **Generate images (Studio)** | `streamlit run main.py` | Exported `medsynth-model/pipeline/` (already present), Python 3.10–3.12 |
+| **Train or resume training** | `python train.py` | Source datasets in `data/raw/`, CUDA-capable NVIDIA GPU, internet access for base SD 1.5 |
+| **Prepare datasets** | Built into `train.py` | Place raw dataset archives into `data/raw/` (see [Step 2](#step-2--get-the-datasets)) |
 
 ```bash
-# 1. Install dependencies
-uv pip install -r requirements.txt
-# or: pip install -r requirements.txt
+# Install dependencies (once)
+pip install -r requirements.txt
 
-# 2. Launch the Streamlit Studio
+# Launch the studio (no dataset needed — model is already trained)
 streamlit run main.py
 ```
 
@@ -66,28 +71,34 @@ A single unified model learns all three dermatological views. Each view is condi
 medsynth/
 ├── main.py                     <- Streamlit clinical studio application
 ├── train.py                    <- Dataset preparation, LoRA fine-tuning, and model export
-├── requirements.txt            <- Dependencies with PyTorch CUDA --find-links
+├── requirements.txt            <- Dependencies (PyTorch CUDA 12.1 via --extra-index-url)
 ├── README.md
 ├── .streamlit/
 │   └── config.toml             <- Light clinical theme (teal accent) + server settings
 ├── utils/
 │   ├── prompt_enhancer.py      <- Caption grammar, modality tails, CLIP token budget
 │   └── chat_history.py         <- SQLite threads, message log, settings, Markdown export
-├── data/                       <- Local dataset files (gitignored; not needed for inference)
+├── medsynth-model/             <- Created by train.py (gitignored) — training is COMPLETE
+│   ├── pipeline/               <- Standalone diffusion pipeline loaded by main.py ✅
+│   ├── lora/                   <- Exported LoRA safetensors ✅
+│   ├── samples/                <- Final validation samples (step 15000) ✅
+│   ├── training_complete.json  <- Marker: 15,000 steps, finished 2026-10-03 ✅
+│   ├── model_info.json         <- Base model, LoRA rank, steps, datasets
+│   ├── train_config.json       <- Full config snapshot of the finished run
+│   ├── train_log.csv           <- step / loss / lr history
+│   ├── prompt_examples.txt     <- One example caption per dataset + class
+│   ├── checkpoints/            <- lora-step-* snapshots (created during training only)
+│   └── state/                  <- Accelerate resume state (created during training only)
+├── data/                       <- Created by train.py on first run (gitignored; absent now)
 │   ├── raw/
 │   │   ├── ham10000/           <- HAM10000 archives and metadata
 │   │   ├── pad_ufes_20/        <- PAD-UFES-20 archives and metadata
-│   │   └── fitzpatrick17k/     <- Fetched automatically by train.py
+│   │   └── fitzpatrick17k/     <- Downloaded automatically by train.py
 │   └── prepared/               <- Processed 512x512 images, captions, 2% held-out set
-├── medsynth-model/             <- Created by train.py (gitignored)
-│   ├── pipeline/               <- Standalone diffusion pipeline loaded by main.py
-│   ├── lora/                   <- Exported LoRA safetensors
-│   ├── checkpoints/            <- lora-step-* snapshots (every 1,000 steps, keeps last 2)
-│   └── samples/                <- Validation samples per view during training
-├── model/                      <- Older training output (gitignored; pipeline fallback location)
+├── model/                      <- Legacy training output (gitignored; pipeline fallback location)
 ├── results/                    <- Runtime data (gitignored)
-│   ├── medsynth_history.sqlite3
-│   └── exports/<thread>-<stamp>/ <- Markdown summary + synthesized PNGs
+│   ├── medsynth_history.sqlite3   <- Threads, messages, per-thread settings ✅
+│   └── exports/<thread>-<stamp>/ <- Created on first export: Markdown summary + PNGs
 ├── main_gradio_backup.py       <- Preserved Gradio interface (gitignored, local only)
 └── video-assets/               <- Demo recording scripts (gitignored, local only)
 ```
@@ -96,47 +107,80 @@ medsynth/
 
 ## Installation
 
-Medsynth requires **Python 3.10–3.12** (PyTorch 2.2.2 ships no wheels for 3.13+). For training, an **NVIDIA GPU with CUDA** is required — auto-batching works down to roughly 7 GB VRAM, with 10 GB+ comfortable and 16 GB+ recommended. For inference in the studio, an NVIDIA GPU gives near-instant diffusion sampling; CPU is supported automatically if CUDA is absent.
+Medsynth requires **Python 3.10–3.12** (PyTorch 2.2.2 ships no wheels for 3.13+).
+
+* **For using the studio:** an NVIDIA GPU gives near-instant diffusion sampling; CPU is supported automatically if CUDA is absent (slower).
+* **For training:** an NVIDIA GPU with CUDA is **required** — auto-batching works down to roughly 7 GB VRAM, with 10 GB+ comfortable and 16 GB+ recommended.
+
+### 1. Create and activate a virtual environment
 
 ```bash
-# Create and activate virtual environment
 python -m venv env
+```
 
-# Windows PowerShell:
+```powershell
+# Windows PowerShell
 .\env\Scripts\Activate.ps1
-# Linux / macOS:
-# source env/bin/activate
+```
 
-# Upgrade installer and install dependencies
+```bash
+# Linux / macOS
+source env/bin/activate
+```
+
+### 2. Install dependencies
+
+```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 # Alternatively, using uv:
 # uv pip install -r requirements.txt
+```
 
-# Verify CUDA availability
+### 3. Verify the install
+
+```bash
 python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
 
-> **Note on `requirements.txt`**: The requirements specify `--find-links https://download.pytorch.org/whl/cu121` so that both standard `pip` and fast `uv pip` resolve PyTorch CUDA 12.1 binaries without index confusion or version mismatches against PyPI packages (`requests`, `streamlit`, etc.).
+Expected: `CUDA available: True` plus your GPU name (or `CPU` if you only plan to run the studio on CPU).
+
+> **Note on `requirements.txt`:** it uses `--index-url https://pypi.org/simple` together with `--extra-index-url https://download.pytorch.org/whl/cu121`, so both standard `pip` and fast `uv pip` resolve PyTorch CUDA 12.1 binaries (`torch==2.2.2+cu121`) alongside regular PyPI packages (`streamlit`, `requests`, etc.).
 
 ---
 
-## Running the Streamlit Studio
+## Using the Studio
+
+The trained pipeline already ships in `medsynth-model/pipeline/`, so no datasets and no training run are needed.
+
+### Start the app
 
 ```bash
 streamlit run main.py
 ```
 
-Or via Python module execution:
+or equivalently:
+
 ```bash
 python -m streamlit run main.py
 ```
 
-The app will open automatically in your browser at `http://localhost:8501`.
+The studio opens automatically at `http://localhost:8501`.
 
-### Custom Pipeline Location
+### Generate your first image
 
-If your trained model is located in a non-default directory, set `MEDSYNTH_MODEL_DIR` to the folder containing `model_index.json`:
+1. **Wait for the header pill** in the sidebar to show `GPU Ready · <your GPU> · FP16` (or `CPU Mode · FP32 (slower)`). The pipeline loads once, on first generation, and is cached afterwards.
+2. **Pick the capture view** with the **Image type** selector at the top-right of the studio: `Dermoscopy`, `Smartphone`, or `Clinical photo`. The choice is saved per conversation.
+3. **Describe the lesion** in the composer bar at the bottom — free text is fine, e.g. *"mole on the back of a fitzpatrick 3 patient"*. The enhancer maps it onto the clinical caption grammar the model was trained on.
+4. **Click `✨ Generate`** (or press Enter). A spinner shows while diffusion sampling runs.
+5. **Read the result card**: it shows the enhanced caption, steps, CFG scale, seed, and CLIP token count. Use **`📥 Download PNG`** to save the untouched full-resolution file.
+6. **Reuse a seed** by typing it into `Seed` under `🎛️ Parameters & Modifiers` — the same seed + prompt reproduces the identical image.
+
+Everything (prompts, images, settings) is persisted per conversation in `results/medsynth_history.sqlite3`, so closing the browser loses nothing.
+
+### Custom pipeline location
+
+If your trained model lives somewhere else, set `MEDSYNTH_MODEL_DIR` to the folder containing `model_index.json`:
 
 ```powershell
 # Windows PowerShell
@@ -151,7 +195,7 @@ MEDSYNTH_MODEL_DIR=/path/to/medsynth/pipeline streamlit run main.py
 
 Without the variable, the studio resolves the pipeline in order: `medsynth-model/pipeline/` → `model/pipeline/`.
 
-### How the Studio Loads the Model
+### How the studio loads the model
 
 * The pipeline is loaded **once** and cached across reruns (`st.cache_resource`), with `HF_HUB_OFFLINE=1` so inference never contacts the Hugging Face Hub.
 * CUDA runs in `float16` with the DPM++ Karras scheduler, channels-last memory format, and TF32 enabled; the safety checker is disabled (outputs are synthetic research artifacts — see [Responsible & Ethical Use](#responsible--ethical-use)).
@@ -223,9 +267,27 @@ Expand **`🎛️ Parameters & Modifiers`** under *Generation Settings* in the s
 
 ---
 
-## Dataset Preparation
+## Training the Model
 
-Training data is **not included** in the repository. Place dataset archives in the following folders:
+> **You do not need to train to use this project.** A finished 15,000-step model already exists in `medsynth-model/`. Train only if you want to retrain from scratch, change hyperparameters, or reproduce the run.
+
+Training is a three-step process: **prerequisites → datasets → one command**.
+
+### Step 1 — Prerequisites
+
+* Python 3.10–3.12 in an activated virtual environment with `requirements.txt` installed ([Installation](#installation)).
+* An NVIDIA GPU with working CUDA. `train.py` checks this *first* and exits with a fix-it message if CUDA is missing — it will never silently train on CPU.
+* Internet access: the base model (`stable-diffusion-v1-5/stable-diffusion-v1-5`) is downloaded from the Hugging Face Hub on the first run, and Fitzpatrick17k images are fetched automatically.
+
+Sanity check before you commit to a long run:
+
+```bash
+python -c "import torch; assert torch.cuda.is_available(), 'CUDA missing'; print(torch.cuda.get_device_name(0))"
+```
+
+### Step 2 — Get the Datasets
+
+Training data is **not included** in the repository. Create the folders and drop the downloads in:
 
 ```
 data/
@@ -242,36 +304,98 @@ data/
         └── images/                        (downloaded automatically by train.py)
 ```
 
-Create folders on Windows PowerShell:
+Create the folders on Windows PowerShell:
+
 ```powershell
 New-Item -ItemType Directory -Force -Path "data\raw\ham10000", "data\raw\pad_ufes_20", "data\raw\fitzpatrick17k"
 ```
 
-* **HAM10000**: Download from [Harvard Dataverse](https://doi.org/10.7910/DVN/DBW86T) or [Kaggle](https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000). Place zip files into `data/raw/ham10000/`.
-* **PAD-UFES-20**: Download from [Mendeley Data](https://data.mendeley.com/datasets/zr7vgbcyr2/1) or [Kaggle](https://www.kaggle.com/datasets/mahdavi1202/skin-cancer). Place into `data/raw/pad_ufes_20/`.
-* **Fitzpatrick17k**: Handled automatically when starting `train.py`.
+or on Linux / macOS:
 
----
+```bash
+mkdir -p data/raw/ham10000 data/raw/pad_ufes_20 data/raw/fitzpatrick17k
+```
 
-## Model Training
+| Dataset | What to download | Where to put it |
+|---|---|---|
+| **HAM10000** | [Harvard Dataverse](https://doi.org/10.7910/DVN/DBW86T) or [Kaggle](https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000) — both zip parts + metadata CSV | `data/raw/ham10000/` |
+| **PAD-UFES-20** | [Mendeley Data](https://data.mendeley.com/datasets/zr7vgbcyr2/1) or [Kaggle](https://www.kaggle.com/datasets/mahdavi1202/skin-cancer) — images + `metadata.csv` | `data/raw/pad_ufes_20/` |
+| **Fitzpatrick17k** | Nothing — CSV and images are downloaded automatically on the first run | created by `train.py` |
 
-To begin training:
+Loose files dropped directly into `data/` are adopted and moved into the right sub-folder automatically. Missing datasets stop the run with per-dataset instructions (set `require_all_datasets = False` in `train.py`'s `Config` to train on a subset instead).
+
+### Step 3 — Run the Trainer
+
 ```bash
 python train.py
 ```
 
-`train.py` automatically handles:
-1. CUDA verification and mixed-precision configuration (bf16/fp16).
-2. Archive extraction and image preprocessing (512x512 with view-safe augmentations).
-3. 2% held-out test split creation under `data/prepared/heldout.jsonl`.
-4. LoRA fine-tuning of Stable Diffusion 1.5 with auto-batched gradient accumulation.
-5. Periodic validation samples under `medsynth-model/samples/` (every 1,000 steps, one per view).
-6. Checkpointing to `medsynth-model/checkpoints/` (every 1,000 steps, last two kept).
-7. Export of the LoRA weights to `medsynth-model/lora/` and the full standalone pipeline to `medsynth-model/pipeline/`.
+That single command does everything, in order — each stage is skipped automatically if it was already completed:
 
-**Resuming**: If training is interrupted, re-running `python train.py` detects and resumes from the latest checkpoint automatically (set `retrain = True` in `train.py`'s `Config` to start from scratch).
+1. **CUDA check** — fails fast with a fix if no usable GPU is found.
+2. **Tidy files** — moves loose dataset files into `data/raw/<dataset>/`.
+3. **Download Fitzpatrick17k** — CSV first, then images (dead links are logged, not retried).
+4. **Prepare data** — builds captions in the clinical grammar, balances classes, resizes to 512×512, writes `metadata.jsonl` and a 2% held-out split (`heldout.jsonl`).
+5. **Train** — LoRA fine-tuning with auto-batched gradient accumulation; resumes automatically after a crash or `Ctrl+C`.
+6. **Export** — merges the LoRA into a standalone fp16 pipeline at `medsynth-model/pipeline/` and writes `training_complete.json`.
 
-**Smoke test**: Set `smoke_test = True` in `Config` for a ~10-minute end-to-end check (40 steps) that writes to `data/prepared_smoketest/` and `medsynth-smoketest/` without touching your real data or model output.
+On a healthy run you will see lines like:
+
+```
+CUDA GPU: <name> | 12.0 GB VRAM | torch 2.2.2 (CUDA 12.1)
+Auto batch settings for 12 GB: batch 2 x accumulation 8 = 16 images/step, gradient checkpointing on
+Prepared 26xxx training images (5xx held out) in .../data/prepared
+Resuming from lora-step-1000 (step 1000 of 15000)
+training:  13%|...| 2000/15000 ...
+```
+
+When it finishes:
+
+```
+Training finished at step 15000. LoRA saved to .../medsynth-model/lora
+Merging .../medsynth-model/lora into stable-diffusion-v1-5/stable-diffusion-v1-5 ...
+Done. Standalone model saved to: .../medsynth-model/pipeline
+```
+
+**Leave the terminal open for the whole run.** Training writes a checkpoint every 1,000 steps, so even a crash or `Ctrl+C` loses at most ~1,000 steps — just re-run `python train.py` to continue.
+
+### What One Run Does
+
+| Phase | Details |
+|---|---|
+| Data preparation | Archives extracted once (marker files prevent re-extraction), view-safe augmentations applied (dermoscopy gets flips + rotations; real photos keep gravity) |
+| Balancing | Per-class caps (1,200 for HAM10000/PAD-UFES-20, 600 for Fitzpatrick17k) and weighted sampling so small datasets aren't drowned out (shares: 35% / 25% / 40%) |
+| Training | Effective batch 16 images/step, LoRA rank 32 on the UNet attention layers, cosine LR 1e-4 with 500 warmup steps, Min-SNR γ=5 loss weighting, caption dropout 0.1 |
+| Monitoring | Loss logged to `medsynth-model/train_log.csv` every 50 steps; a validation sample per view written to `medsynth-model/samples/` every 1,000 steps |
+| Checkpointing | Full resume state + LoRA snapshot every 1,000 steps into `medsynth-model/state/` and `medsynth-model/checkpoints/` (last 2 states kept) |
+| Export | LoRA fused into the base model, saved as fp16 safetensors to `medsynth-model/pipeline/`, plus `prompt_examples.txt` copied alongside |
+
+### Outputs You Get
+
+After a successful run, `medsynth-model/` contains:
+
+| Path | What it is |
+|---|---|
+| `pipeline/` | **The model the studio loads** — standalone, no network needed |
+| `lora/pytorch_lora_weights.safetensors` | The exported LoRA weights alone (reusable on other SD 1.5 pipelines) |
+| `samples/step-*.png` | Validation renders per view — visual progress checkpoints |
+| `training_complete.json` | Marker file; its presence makes `python train.py` a no-op |
+| `model_info.json` | Base model, pipeline path, steps, LoRA rank, datasets |
+| `train_config.json` | Full config snapshot of the run (for reproducibility) |
+| `train_log.csv` | `step,loss,lr` history for plotting convergence |
+| `checkpoints/lora-step-*` | Intermediate LoRA snapshots (during training) |
+| `state/step-*` | Accelerate resume state (during training) |
+
+### Resuming, Retraining & Smoke Test
+
+| Goal | What to do |
+|---|---|
+| **Continue an interrupted run** | Just run `python train.py` again — it finds the latest checkpoint and resumes from that step. |
+| **Do nothing (model finished)** | Run `python train.py` — it prints the completion message and exits. You can never retrain by accident. |
+| **Start over from scratch** | Set `retrain = True` in the `Config` class at the top of `train.py` (deletes checkpoints and the completion marker, then trains fresh). |
+| **Quick end-to-end check (~10 min)** | Set `smoke_test = True` in `Config`. Runs 40 steps on tiny subsets into `data/prepared_smoketest/` and `medsynth-smoketest/` — your real data and model output are untouched. Set it back to `False` afterwards. |
+| **Change hyperparameters** | Edit the `Config` class at the top of `train.py` (steps, LR, rank, batch…), see [Training Configuration](#training-configuration). |
+| **Use the model afterwards** | `streamlit run main.py` — no further conversion needed. |
 
 ### GPU Memory Requirements
 
@@ -320,9 +444,11 @@ Defaults live in the `Config` class at the top of `train.py`:
 
 | Issue | Cause & Solution |
 |---|---|
-| `uv pip install` fails on `requests` version | Ensure `requirements.txt` uses `--find-links https://download.pytorch.org/whl/cu121` instead of `--extra-index-url`. |
-| `CUDA is not available ... CPU-only build` | Reinstall PyTorch with CUDA 12.1 support matching your graphics driver. |
+| `uv pip install` fails on `requests` version | Ensure `requirements.txt` keeps `--index-url https://pypi.org/simple` **and** `--extra-index-url https://download.pytorch.org/whl/cu121` — mixing them up makes uv resolve `requests` against the PyTorch index. |
+| `CUDA is not available ... CPU-only build` | Reinstall PyTorch with CUDA 12.1 support matching your graphics driver: `pip install torch==2.2.2+cu121 --index-url https://download.pytorch.org/whl/cu121`. |
 | `CUDA out of memory` during training | In `train.py`, set `auto_batch = False`, `batch_size = 1`, `grad_accum = 16`, and `gradient_checkpointing = True`. |
+| `Cannot start training: some datasets are not ready` | Follow the per-dataset instructions printed in the error — check the folder layout in [Step 2](#step-2--get-the-datasets). |
+| Trainer exits immediately with "A trained model already exists" | Expected: training is complete. Use `streamlit run main.py`, or set `retrain = True` to train again. |
 | Studio shows `Trained model not found` | Ensure `medsynth-model/pipeline/model_index.json` exists, or set `$env:MEDSYNTH_MODEL_DIR`. |
 | **`Connection error / Is Streamlit still running?` during generation** | The Streamlit server process died — usually RAM/VRAM exhaustion while loading the pipeline (this shows up as hard crashes in Windows Event Log, not a Python traceback). Close memory-heavy apps (browsers, IDEs) and retry; on CUDA OOM the studio automatically falls back to attention slicing → model CPU offload → CPU. |
 | Generation is very slow | No NVIDIA GPU is available, so sampling runs on CPU. A CUDA GPU makes each image near-instant. |
